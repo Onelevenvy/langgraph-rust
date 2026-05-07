@@ -1,0 +1,20 @@
+[package]
+name = "langgraph-checkpoint"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmp-serde = "1"
+async-trait = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dashmap = "6"
+parking_lot = "0.12"

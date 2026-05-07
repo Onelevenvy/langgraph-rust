@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/langgraph-checkpoint",
+    "crates/langgraph-checkpoint-postgres",
+    "crates/langgraph",
+    "crates/langgraph-derive",
+    "crates/langgraph-prebuilt",
+    "crates/langgraph-providers",
+]
+
+[workspace.lints.rust]
+unused = "allow"
+unused_imports = "allow"
+
+[package]
+name = "langgraph-rust"
+version.workspace = true
+edition.workspace = true
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+thiserror = "2"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+
+[dependencies]
+langgraph = { path = "crates/langgraph" }
+langgraph-prebuilt = { path = "crates/langgraph-prebuilt" }
+langgraph-checkpoint = { path = "crates/langgraph-checkpoint" }
+langgraph-derive = { path = "crates/langgraph-derive" }
+langgraph-providers = { path = "crates/langgraph-providers" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+dotenvy = "0.15.7"
+
+[[example]]
+name = "chat_simple"
+path = "examples/langgraph_provider_openai.rs"
+
+[[example]]
+name = "react_agent"
+path = "examples/react_agent.rs"
+
+[[example]]
+name = "graph_with_tools"
+path = "examples/graph_with_tools.rs"
+
+[[example]]
+name = "state_graph_derive"
+path = "examples/state_graph_derive.rs"
+
+[[example]]
+name = "human_in_the_loop"
+path = "examples/human_in_the_loop.rs"
+
+[[example]]
+name = "streaming"
+path = "examples/streaming.rs"
+
+[[example]]
+name = "time_travel"
+path = "examples/time_travel.rs"
+
+[[example]]
+name = "manus_like"
+path = "examples/manus_like.rs"
