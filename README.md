@@ -2,6 +2,19 @@
 
 A Rust implementation of [LangGraph](https://github.com/langchain-ai/langgraph) -- a framework for building stateful, multi-actor applications with LLMs.
 
+## Table of Contents
+
+- [Overview](#overview)
+- [Project Structure](#project-structure)
+- [Quick Start](#quick-start)
+- [Supported Providers](#supported-providers)
+- [Supported Checkpointers](#supported-checkpointers)
+- [Roadmap](#roadmap)
+- [Examples](#examples)
+- [Crate Overview](#crate-overview)
+- [Requirements](#requirements)
+- [License](#license)
+
 ## Overview
 
 langgraph-rust brings the core LangGraph concepts into idiomatic Rust:
@@ -28,6 +41,21 @@ langgraph-rust/
 ```
 
 ## Quick Start
+
+### Configure Environment
+
+Copy `.env.example` to `.env` and fill in your specific model information:
+
+```bash
+cp .env.example .env
+```
+
+Example `.env` content:
+```env
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_BASE=https://xxxxxxx/v1
+OPENAI_MODEL=xxxxxxx
+```
 
 ### Define a ReAct Agent with Tools
 
