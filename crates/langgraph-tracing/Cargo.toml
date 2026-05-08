@@ -1,0 +1,23 @@
+[package]
+name = "langgraph-tracing"
+version = "0.1.0"
+edition = "2021"
+description = "Lightweight LLM tracing and observability for LangGraph applications"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = "0.1"
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+futures = "0.3"
+tokio-stream = { workspace = true }
+
+# Integration with langgraph traits
+langgraph = { path = "../langgraph" }
+langgraph-checkpoint = { path = "../langgraph-checkpoint" }
+langgraph-prebuilt = { path = "../langgraph-prebuilt" }

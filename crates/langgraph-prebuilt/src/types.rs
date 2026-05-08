@@ -38,6 +38,9 @@ pub enum Message {
         tool_calls: Vec<ToolCall>,
         #[serde(default)]
         id: Option<String>,
+        /// Token usage from the LLM API response, if available.
+        #[serde(default)]
+        usage: Option<crate::traits::LlmUsage>,
     },
     /// A system message providing instructions.
     System {
@@ -155,6 +158,7 @@ impl Message {
             content: MessageContent::Text(content.into()),
             tool_calls: vec![],
             id: None,
+            usage: None,
         }
     }
 
@@ -164,6 +168,39 @@ impl Message {
             content: MessageContent::Text(content.into()),
             tool_calls,
             id: None,
+            usage: None,
+        }
+    }
+
+    /// Create an AI message with token usage information.
+    pub fn ai_with_usage(content: impl Into<String>, usage: crate::traits::LlmUsage) -> Self {
+        Message::Ai {
+            content: MessageContent::Text(content.into()),
+            tool_calls: vec![],
+            id: None,
+            usage: Some(usage),
+        }
+    }
+
+    /// Create an AI message with tool calls and token usage.
+    pub fn ai_with_tool_calls_and_usage(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+        usage: crate::traits::LlmUsage,
+    ) -> Self {
+        Message::Ai {
+            content: MessageContent::Text(content.into()),
+            tool_calls,
+            id: None,
+            usage: Some(usage),
+        }
+    }
+
+    /// Get token usage from the message, if available.
+    pub fn usage(&self) -> Option<&crate::traits::LlmUsage> {
+        match self {
+            Message::Ai { usage, .. } => usage.as_ref(),
+            _ => None,
         }
     }
 

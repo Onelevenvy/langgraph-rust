@@ -16,7 +16,7 @@ pub mod tools_condition;
 pub mod node_helpers;
 
 pub use types::{Message, ToolCall, MessageContent, ContentBlock, add_messages, add_messages_ref};
-pub use traits::{BaseTool, BaseChatModel, MessageStream, ToolDef, ClosureTool, ToolError, ModelError, PreparedTools, prepare_tools};
+pub use traits::{BaseTool, BaseChatModel, MessageStream, ToolDef, ClosureTool, ToolError, ModelError, PreparedTools, prepare_tools, LlmUsage};
 pub use tool_node::ToolNode;
 pub use chat_agent::{create_react_agent, ReActAgent, ReActAgentConfig};
 pub use tools_condition::tools_condition;

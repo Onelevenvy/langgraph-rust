@@ -11,6 +11,14 @@ use crate::types::Message;
 /// (for real-time display) or the final complete message.
 pub type MessageStream<'a> = Pin<Box<dyn tokio_stream::Stream<Item = Result<Message, ModelError>> + Send + 'a>>;
 
+/// Token usage information from an LLM API response.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct LlmUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+}
+
 /// Error type for tool and model operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

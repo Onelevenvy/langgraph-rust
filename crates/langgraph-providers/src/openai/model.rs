@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 
 use langgraph_checkpoint::config::RunnableConfig;
-use langgraph_prebuilt::{BaseChatModel, Message, MessageStream, ModelError, ToolDef};
+use langgraph_prebuilt::{BaseChatModel, LlmUsage, Message, MessageStream, ModelError, ToolDef};
 
 use super::types::{from_openai_tool_call, to_openai_message, to_openai_tool};
 
@@ -181,6 +181,13 @@ impl BaseChatModel for OpenAIModel {
             .await
             .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
+        // Extract token usage from response
+        let usage = response.usage.map(|u| LlmUsage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+        });
+
         // Extract the first choice
         let choice = response
             .choices
@@ -198,10 +205,11 @@ impl BaseChatModel for OpenAIModel {
 
         let content = msg.content.clone().unwrap_or_default();
 
-        if tool_calls.is_empty() {
-            Ok(Message::ai(content))
-        } else {
-            Ok(Message::ai_with_tool_calls(content, tool_calls))
+        match (tool_calls.is_empty(), usage) {
+            (true, None) => Ok(Message::ai(content)),
+            (true, Some(u)) => Ok(Message::ai_with_usage(content, u)),
+            (false, None) => Ok(Message::ai_with_tool_calls(content, tool_calls)),
+            (false, Some(u)) => Ok(Message::ai_with_tool_calls_and_usage(content, tool_calls, u)),
         }
     }
 

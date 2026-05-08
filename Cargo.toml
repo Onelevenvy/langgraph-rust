@@ -7,6 +7,7 @@ members = [
     "crates/langgraph-derive",
     "crates/langgraph-prebuilt",
     "crates/langgraph-providers",
+    "crates/langgraph-tracing",
 ]
 
 [workspace.lints.rust]
@@ -40,6 +41,7 @@ langgraph-prebuilt = { path = "crates/langgraph-prebuilt" }
 langgraph-checkpoint = { path = "crates/langgraph-checkpoint" }
 langgraph-derive = { path = "crates/langgraph-derive" }
 langgraph-providers = { path = "crates/langgraph-providers" }
+langgraph-tracing = { path = "crates/langgraph-tracing" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -90,3 +92,7 @@ path = "examples/parallel_interrupt_hitl.rs"
 [[example]]
 name = "join_edge_test"
 path = "examples/join_edge_test.rs"
+
+[[example]]
+name = "tracing_demos"
+path = "examples/tracing_demos.rs"
