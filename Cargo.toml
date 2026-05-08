@@ -82,3 +82,11 @@ path = "examples/manus_like.rs"
 [[example]]
 name = "interactive_chat"
 path = "examples/interactive_chat.rs"
+
+[[example]]
+name = "parallel_interrupt_hitl"
+path = "examples/parallel_interrupt_hitl.rs"
+
+[[example]]
+name = "join_edge_test"
+path = "examples/join_edge_test.rs"

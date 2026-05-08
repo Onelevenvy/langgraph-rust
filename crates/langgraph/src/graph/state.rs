@@ -974,17 +974,23 @@ impl Clone for CompiledStateGraph {
 /// For each node, creates a combined runnable that:
 /// 1. Executes the node logic
 /// 2. Writes state updates to channels
-/// 3. Writes to trigger channels for edge targets
+/// 3. Writes to trigger / barrier channels for edge targets
+///
+/// Join edges (from `add_join_edge`) use a `NamedBarrierValue` channel
+/// (named `join:{sources}:{target}`) instead of a plain `branch:to:{target}`.
+/// Each source node writes its own name into the barrier channel; the barrier
+/// becomes available only when ALL sources have written, at which point the
+/// join-target node is triggered.
 fn build_pregel_nodes(
     nodes: &HashMap<String, StateNodeSpec>,
     edges: &HashSet<(String, String)>,
-    _waiting_edges: &HashSet<WaitingEdge>,
+    waiting_edges: &HashSet<WaitingEdge>,
     branches: &HashMap<String, HashMap<String, BranchSpec>>,
     channels: &HashMap<String, Box<dyn Channel>>,
 ) -> HashMap<String, PregelNode> {
     let mut pregel_nodes = HashMap::new();
 
-    // Build a map of source -> [targets] from edges
+    // Build a map of source -> [plain-edge targets] (excluding END)
     let mut edge_targets: HashMap<String, Vec<String>> = HashMap::new();
     for (start, end) in edges {
         if end != END {
@@ -992,11 +998,46 @@ fn build_pregel_nodes(
         }
     }
 
+    // Build join-edge lookup maps from waiting_edges:
+    //
+    //   join_writes_for_source:  source_name -> [(barrier_channel_name, source_name)]
+    //     When a source node completes, it writes its own name into every
+    //     barrier channel it participates in.
+    //
+    //   join_trigger_for_target: target_name -> barrier_channel_name
+    //     The join-target node uses the barrier channel as its sole trigger
+    //     instead of the default "branch:to:{name}" ephemeral channel.
+    let mut join_writes_for_source: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut join_trigger_for_target: HashMap<String, String> = HashMap::new();
+
+    for (sources, target) in waiting_edges {
+        // Barrier channel name must match what compile_with() created.
+        // sources is a Vec so we preserve insertion order for the name.
+        let barrier_name = format!("join:{}:{}", sources.join("+"), target);
+
+        // Each source must write its name into this barrier channel
+        for source in sources {
+            join_writes_for_source
+                .entry(source.clone())
+                .or_default()
+                .push((barrier_name.clone(), source.clone()));
+        }
+
+        // The target node is triggered by the barrier channel
+        join_trigger_for_target.insert(target.clone(), barrier_name);
+    }
+
     // Build PregelNode for each registered node
     for (name, spec) in nodes {
-        let trigger = format!("branch:to:{}", name);
+        // Determine this node's trigger channel.
+        // Join-target nodes use their barrier channel; all others use the
+        // standard ephemeral "branch:to:{name}" channel.
+        let trigger = join_trigger_for_target
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| format!("branch:to:{}", name));
 
-        // Determine input channels — use all non-special channels as input
+        // Determine input channels — all non-special channels
         let input_channels: Vec<String> = channels
             .keys()
             .filter(|k| {
@@ -1005,20 +1046,22 @@ fn build_pregel_nodes(
             .cloned()
             .collect();
 
-        // Get edge targets for this node
-        let targets: Vec<String> = edge_targets
+        // Plain edge targets for this node
+        let targets: Vec<String> = edge_targets.get(name).cloned().unwrap_or_default();
+
+        // Barrier channel writes this node must emit when it completes
+        // (participates in one or more join edges)
+        let barrier_writes: Vec<(String, String)> = join_writes_for_source
             .get(name)
             .cloned()
             .unwrap_or_default();
 
-        // Get branch specs for this node
+        // Branch specs
         let node_branches: Vec<BranchSpec> = branches
             .get(name)
             .map(|m| m.values().cloned().collect())
             .unwrap_or_default();
 
-        // Create a combined runnable that wraps the node logic and adds
-        // trigger channel writes as part of the output
         let node_runnable = spec.runnable.clone();
         let node_name = name.clone();
 
@@ -1028,6 +1071,7 @@ fn build_pregel_nodes(
                 move |input, config| {
                     let node_runnable = node_runnable.clone();
                     let targets = targets.clone();
+                    let barrier_writes = barrier_writes.clone();
                     let node_branches = node_branches.clone();
                     async move {
                         // 1. Execute the node logic
@@ -1043,13 +1087,23 @@ fn build_pregel_nodes(
                             }
                         }
 
-                        // 3. Write to trigger channels for edge targets
+                        // 3. Write to plain trigger channels for simple edge targets
                         for target in &targets {
                             let trigger_ch = format!("branch:to:{}", target);
                             result.insert(trigger_ch, JsonValue::String(target.clone()));
                         }
 
-                        // 4. Evaluate branches and write to appropriate targets
+                        // 4. Write into barrier channels for join-edge participation.
+                        // The value written is this node's own name so the
+                        // NamedBarrierValue can track which sources have arrived.
+                        for (barrier_ch, source_name) in &barrier_writes {
+                            result.insert(
+                                barrier_ch.clone(),
+                                JsonValue::String(source_name.clone()),
+                            );
+                        }
+
+                        // 5. Evaluate conditional branches
                         for branch in &node_branches {
                             let branch_result = branch.path.ainvoke(&output, &config).await?;
                             let key = branch_result.as_str().unwrap_or("");
@@ -1295,14 +1349,55 @@ impl CompiledStateGraph {
             match runner.run_tasks(&mut tasks).await {
                 Ok(()) => {}
                 Err(crate::pregel::runner::RunnerError::Interrupt { task_id, interrupt }) => {
-                    // Save checkpoint. We do NOT call apply_writes here because
-                    // the interrupted task didn't complete. This means
-                    // versions_seen for the interrupted task is NOT updated,
-                    // so on resume the version comparison will trigger it again.
+                   
+                    // Even when one task is interrupted, other tasks in the same
+                    // super-step may have already completed and written trigger
+                    // channels for downstream nodes. We must apply those writes
+                    // before saving the checkpoint so they survive across the
+                    // interrupt/resume boundary. The interrupted task is excluded
+                    // so its versions_seen is NOT updated, preserving its ability
+                    // to re-trigger on resume.
+                    {
+                        // Update versions_seen only for completed tasks
+                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
+                            let seen = versions_seen.entry(task.name.clone()).or_default();
+                            for trigger in &task.triggers {
+                                if let Some(ver) = channel_versions.get(trigger) {
+                                    seen.insert(trigger.clone(), ver.clone());
+                                }
+                            }
+                        }
+                        // Collect writes from completed tasks
+                        let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
+                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
+                            for (chan, val) in &task.writes {
+                                if chan != crate::constants::TASKS && chan != crate::constants::INTERRUPT {
+                                    writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
+                                }
+                            }
+                        }
+                        // Apply to channels and bump versions
+                        for (chan, vals) in &writes_by_channel {
+                            if let Some(ch) = channels.get(chan) {
+                                if ch.update(vals).unwrap_or(false) {
+                                    let cur = channel_versions.get(chan);
+                                    let new_ver = cur
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(0) + 1;
+                                    channel_versions.insert(
+                                        chan.clone(),
+                                        JsonValue::String(format!("{:032}", new_ver)),
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if let Some(ref cp) = self.checkpointer {
+                        // Checkpoint now includes completed tasks' channel writes
                         self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
                         // Save interrupt info as pending writes so get_state can retrieve them
-                        let pending_writes: Vec<(String, String, JsonValue)> = interrupt
+                        let interrupt_writes: Vec<(String, String, JsonValue)> = interrupt
                             .interrupts
                             .iter()
                             .map(|iv| {
@@ -1310,8 +1405,8 @@ impl CompiledStateGraph {
                                 (task_id.clone(), crate::constants::INTERRUPT.to_string(), val)
                             })
                             .collect();
-                        if !pending_writes.is_empty() {
-                            if let Err(e) = cp.put_writes(config, &pending_writes, &task_id, "") {
+                        if !interrupt_writes.is_empty() {
+                            if let Err(e) = cp.put_writes(config, &interrupt_writes, &task_id, "") {
                                 eprintln!("[CHECKPOINT] Failed to save interrupt writes: {}", e);
                             }
                         }
@@ -1653,7 +1748,59 @@ impl CompiledStateGraph {
 
             match runner.run_tasks(&mut tasks).await {
                 Ok(()) => {}
-                Err(crate::pregel::runner::RunnerError::Interrupt { .. }) => {
+                Err(crate::pregel::runner::RunnerError::Interrupt { task_id, interrupt }) => {
+                  
+                    // before saving checkpoint so trigger channels are preserved.
+                    {
+                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
+                            let seen = versions_seen.entry(task.name.clone()).or_default();
+                            for trigger in &task.triggers {
+                                if let Some(ver) = channel_versions.get(trigger) {
+                                    seen.insert(trigger.clone(), ver.clone());
+                                }
+                            }
+                        }
+                        let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
+                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
+                            for (chan, val) in &task.writes {
+                                if chan != crate::constants::TASKS && chan != crate::constants::INTERRUPT {
+                                    writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
+                                }
+                            }
+                        }
+                        for (chan, vals) in &writes_by_channel {
+                            if let Some(ch) = channels.get(chan) {
+                                if ch.update(vals).unwrap_or(false) {
+                                    let cur = channel_versions.get(chan);
+                                    let new_ver = cur
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse::<u64>().ok())
+                                        .unwrap_or(0) + 1;
+                                    channel_versions.insert(
+                                        chan.clone(),
+                                        JsonValue::String(format!("{:032}", new_ver)),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Save checkpoint + interrupt pending_writes (was missing in streaming path)
+                    if let Some(ref cp) = self.checkpointer {
+                        self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
+                        let interrupt_writes: Vec<(String, String, JsonValue)> = interrupt
+                            .interrupts
+                            .iter()
+                            .map(|iv| {
+                                let val = serde_json::to_value(iv).unwrap_or(JsonValue::Null);
+                                (task_id.clone(), crate::constants::INTERRUPT.to_string(), val)
+                            })
+                            .collect();
+                        if !interrupt_writes.is_empty() {
+                            if let Err(e) = cp.put_writes(config, &interrupt_writes, &task_id, "") {
+                                eprintln!("[CHECKPOINT] Failed to save interrupt writes: {}", e);
+                            }
+                        }
+                    }
                     if modes.contains(&StreamMode::Values) {
                         let output_keys: Vec<String> = channels.keys()
                             .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
