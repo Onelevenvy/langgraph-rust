@@ -78,3 +78,7 @@ path = "examples/time_travel.rs"
 [[example]]
 name = "manus_like"
 path = "examples/manus_like.rs"
+
+[[example]]
+name = "interactive_chat"
+path = "examples/interactive_chat.rs"

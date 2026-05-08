@@ -1162,6 +1162,20 @@ impl CompiledStateGraph {
         let mut last_output = JsonValue::Null;
         let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
 
+        // When loading a checkpoint with existing versions, new trigger channel
+        // writes need versions higher than what nodes have already seen.
+        // We compute an offset so that version = format!("{:032}", offset + step).
+        let version_offset: u64 = if saved_checkpoint_exists {
+            channel_versions
+                .values()
+                .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                .max()
+                .unwrap_or(0)
+                + 1
+        } else {
+            0
+        };
+
         // Check if input is a Command (for resume/goto/update).
         // Must parse BEFORE writing input to channels so we can skip
         // channel writes on resume (Command is not real user input).
@@ -1208,7 +1222,7 @@ impl CompiledStateGraph {
 
             // Mark initial channels as versioned
             for (chan, _) in &input_writes {
-                channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", step)));
+                channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", version_offset + step)));
             }
 
             // Write to trigger channels for edges from START.
@@ -1218,7 +1232,7 @@ impl CompiledStateGraph {
                     let trigger_ch = format!("branch:to:{}", end);
                     if let Some(ch) = channels.get(&trigger_ch) {
                         ch.update(&[JsonValue::String(end.clone())]).ok();
-                        channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", step)));
+                        channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", version_offset + step)));
                     }
                 }
             }
@@ -1227,12 +1241,12 @@ impl CompiledStateGraph {
         // Super-step loop
         while step < max_steps {
             // PLAN: prepare next tasks
-            let checkpoint_id = format!("{:032}", step);
+            let checkpoint_id = format!("{:032}", version_offset + step);
             let mut tasks = prepare_next_tasks(
                 &pregel_nodes,
                 &channels,
                 config,
-                step,
+                version_offset + step,
                 &mut versions_seen,
                 &trigger_to_nodes,
                 None,
@@ -1436,37 +1450,74 @@ impl CompiledStateGraph {
 
         let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
 
-        let mut channels: HashMap<String, Box<dyn Channel>> = self.channels
-            .iter()
-            .map(|(k, c)| (k.clone(), c.clone_channel()))
-            .collect();
+        // Load checkpoint if checkpointer is configured
+        let mut saved_checkpoint_exists = false;
+        let (mut channels, mut channel_versions, mut versions_seen) =
+            if let Some(ref cp) = self.checkpointer {
+                match cp.get_tuple(config) {
+                    Ok(Some(tuple)) => {
+                        saved_checkpoint_exists = true;
+                        let cp_channels: HashMap<String, Option<JsonValue>> = tuple
+                            .checkpoint
+                            .channel_values
+                            .iter()
+                            .map(|(k, v)| (k.clone(), Some(v.clone())))
+                            .collect();
+                        let restored = channels_from_checkpoint(
+                            &self.channels,
+                            &cp_channels,
+                        );
 
-        // Map input to channels
-        let input_channels = vec![START.to_string()];
-        let input_writes = map_input(&input_channels, input);
+                        // Apply non-RESUME pending writes
+                        if let Some(ref pending) = tuple.pending_writes {
+                            for (_task_id, channel, value) in pending {
+                                if channel != RESUME {
+                                    if let Some(ch) = restored.get(channel) {
+                                        ch.update(&[value.clone()]).ok();
+                                    }
+                                }
+                            }
+                        }
 
-        for (chan, val) in &input_writes {
-            if let Some(ch) = channels.get(chan) {
-                ch.update(&[val.clone()]).ok();
-            }
-        }
-
-        if let Some(obj) = input.as_object() {
-            for (key, val) in obj {
-                if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
-                    if let Some(ch) = channels.get(key) {
-                        ch.update(&[val.clone()]).ok();
+                        (
+                            restored,
+                            tuple.checkpoint.channel_versions.clone(),
+                            tuple.checkpoint.versions_seen.clone(),
+                        )
                     }
+                    _ => (
+                        self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
+                        HashMap::new(),
+                        HashMap::new(),
+                    ),
                 }
-            }
-        }
+            } else {
+                (
+                    self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
+                    HashMap::new(),
+                    HashMap::new(),
+                )
+            };
 
+        // BSP loop state
         let mut step: u64 = 0;
         let max_steps = config.get_recursion_limit().unwrap_or(self.recursion_limit);
-        let mut channel_versions: ChannelVersions = HashMap::new();
-        let mut versions_seen: HashMap<String, HashMap<String, JsonValue>> = HashMap::new();
         let mut last_output = JsonValue::Null;
         let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
+
+        // When loading a checkpoint with existing versions, new trigger channel
+        // writes need versions higher than what nodes have already seen.
+        // We compute an offset so that version = format!("{:032}", offset + step).
+        let version_offset: u64 = if saved_checkpoint_exists {
+            channel_versions
+                .values()
+                .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                .max()
+                .unwrap_or(0)
+                + 1
+        } else {
+            0
+        };
 
         // Create custom stream channel if custom mode is requested
         let (custom_tx, mut custom_rx) = mpsc::channel::<JsonValue>(64);
@@ -1482,33 +1533,65 @@ impl CompiledStateGraph {
             });
         }
 
-        if let Ok(cmd) = serde_json::from_value::<Command>(input.clone()) {
+        // Check if input is a Command (for resume/goto/update)
+        let is_resuming = if let Ok(cmd) = serde_json::from_value::<Command>(input.clone()) {
             let cmd_writes = map_command(&cmd);
+            let has_resume = cmd_writes.iter().any(|(_, chan, _)| chan == RESUME);
             pending_writes.extend(cmd_writes);
-        }
+            has_resume
+        } else {
+            false
+        };
 
-        for (chan, _) in &input_writes {
-            channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", step)));
-        }
+        // Check if this is a resume-from-checkpoint (fork) with Null input
+        let is_fork = input.is_null() && saved_checkpoint_exists;
 
-        for (start, end) in &self.edges {
-            if start == START && end != END {
-                let trigger_ch = format!("branch:to:{}", end);
-                if let Some(ch) = channels.get(&trigger_ch) {
-                    ch.update(&[JsonValue::String(end.clone())]).ok();
-                    channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", step)));
+        if !is_resuming && !is_fork {
+            // Map input to channels
+            let input_channels = vec![START.to_string()];
+            let input_writes = map_input(&input_channels, input);
+
+            for (chan, val) in &input_writes {
+                if let Some(ch) = channels.get(chan) {
+                    ch.update(&[val.clone()]).ok();
+                }
+            }
+
+            if let Some(obj) = input.as_object() {
+                for (key, val) in obj {
+                    if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
+                        if let Some(ch) = channels.get(key) {
+                            ch.update(&[val.clone()]).ok();
+                        }
+                    }
+                }
+            }
+
+            // Mark initial channels as versioned
+            for (chan, _) in &input_writes {
+                channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", version_offset + step)));
+            }
+
+            // Write to trigger channels for edges from START
+            for (start, end) in &self.edges {
+                if start == START && end != END {
+                    let trigger_ch = format!("branch:to:{}", end);
+                    if let Some(ch) = channels.get(&trigger_ch) {
+                        ch.update(&[JsonValue::String(end.clone())]).ok();
+                        channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", version_offset + step)));
+                    }
                 }
             }
         }
 
         // Super-step loop
         while step < max_steps {
-            let checkpoint_id = format!("{:032}", step);
+            let checkpoint_id = format!("{:032}", version_offset + step);
             let mut tasks = prepare_next_tasks(
                 &pregel_nodes,
                 &channels,
                 config,
-                step,
+                version_offset + step,
                 &mut versions_seen,
                 &trigger_to_nodes,
                 None,
@@ -1619,6 +1702,11 @@ impl CompiledStateGraph {
                     JsonValue::String(format!("{:032}", num + 1))
                 },
             );
+
+            // Save checkpoint after each super-step
+            if let Some(ref cp) = self.checkpointer {
+                self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
+            }
 
             // Emit values after writes
             if modes.contains(&StreamMode::Values) {
