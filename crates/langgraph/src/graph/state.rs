@@ -13,7 +13,7 @@ use crate::constants::{START, END, RESUME, INTERRUPT, NULL_TASK_ID};
 use crate::runnable::{Runnable, RunnableError, IntoNodeFunction};
 use crate::graph::node::StateNodeSpec;
 use crate::graph::branch::BranchSpec;
-use crate::pregel::{PregelNode, PregelRunner, ChannelVersions, channels_from_checkpoint};
+use crate::pregel::{PregelNode, PregelRunner, ChannelVersions, channels_from_checkpoint, PregelExecutableTask};
 use crate::pregel::algo::{prepare_next_tasks, apply_writes};
 use crate::pregel::io::{map_input, map_command, read_channels};
 use crate::stream::StreamPart;
@@ -1134,372 +1134,135 @@ fn build_pregel_nodes(
 /// Default recursion limit.
 const DEFAULT_RECURSION_LIMIT: u64 = 25;
 
+// ── Streaming context ─────────────────────────────────────────────────────
+//
+// Passed to `run_pregel_inner` when streaming is enabled. When `None`, the
+// inner loop runs in non-streaming mode (same logic, no emit calls).
+
+struct StreamCtx<'a> {
+    modes: &'a HashSet<StreamMode>,
+    tx: &'a mpsc::Sender<StreamPart>,
+    /// Sender for the `Custom` stream channel. `None` when Custom mode is off.
+    custom_tx: Option<mpsc::Sender<JsonValue>>,
+}
+
+impl<'a> StreamCtx<'a> {
+    fn has(&self, mode: &StreamMode) -> bool {
+        self.modes.contains(mode)
+    }
+}
+
+// Helper: apply completed tasks' writes to channels, updating versions_seen
+// and channel_versions for them. The interrupted task (identified by
+// `interrupted_task_id`) is deliberately excluded so its trigger channels
+// remain "unseen" and it re-triggers on resume.
+//
+// This mirrors Python's `_suppress_interrupt` in `_loop.py`.
+fn apply_completed_writes(
+    interrupted_task_id: &str,
+    tasks: &[PregelExecutableTask],
+    channels: &HashMap<String, Box<dyn Channel>>,
+    versions_seen: &mut HashMap<String, HashMap<String, JsonValue>>,
+    channel_versions: &mut ChannelVersions,
+) {
+    // Update versions_seen only for completed tasks
+    for task in tasks.iter().filter(|t| t.id != interrupted_task_id && !t.writes.is_empty()) {
+        let seen = versions_seen.entry(task.name.clone()).or_default();
+        for trigger in &task.triggers {
+            if let Some(ver) = channel_versions.get(trigger.as_str()) {
+                seen.insert(trigger.clone(), ver.clone());
+            }
+        }
+    }
+
+    // Collect and apply writes from completed tasks to channels
+    let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
+    for task in tasks.iter().filter(|t| t.id != interrupted_task_id && !t.writes.is_empty()) {
+        for (chan, val) in &task.writes {
+            if chan != crate::constants::TASKS && chan != crate::constants::INTERRUPT {
+                writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
+            }
+        }
+    }
+
+    for (chan, vals) in &writes_by_channel {
+        if let Some(ch) = channels.get(chan.as_str()) {
+            if ch.update(vals).unwrap_or(false) {
+                let cur = channel_versions.get(chan);
+                let new_ver = cur
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0)
+                    + 1;
+                channel_versions.insert(
+                    chan.clone(),
+                    JsonValue::String(format!("{:032}", new_ver)),
+                );
+            }
+        }
+    }
+}
+
+// Helper: collect output channel keys (excluding internal routing channels).
+fn output_channel_keys(channels: &HashMap<String, Box<dyn Channel>>) -> Vec<String> {
+    channels
+        .keys()
+        .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
+        .cloned()
+        .collect()
+}
+
+// Helper: bump-version closure used in apply_writes.
+fn bump_version(current: Option<&JsonValue>) -> JsonValue {
+    let num = current
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    JsonValue::String(format!("{:032}", num + 1))
+}
+
 impl CompiledStateGraph {
-    /// Execute the BSP super-step loop.
-    ///
-    /// This is the core execution engine:
-    /// 1. Map input to channels
-    /// 2. Loop: prepare_next_tasks → execute → apply_writes
-    /// 3. Return output from output channels
+    // ────────────────────────────────────────────────────────────────────────
+    // Public thin wrappers
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Non-streaming invocation: runs the BSP loop and returns the final output.
     async fn run_pregel(
         &self,
         input: &JsonValue,
         config: &RunnableConfig,
     ) -> Result<JsonValue, RunnableError> {
-        // Build PregelNode specs
-        let pregel_nodes = build_pregel_nodes(
-            &self.nodes,
-            &self.edges,
-            &self.waiting_edges,
-            &self.branches,
-            &self.channels,
-        );
-
-        // Build trigger_to_nodes reverse index
-        let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
-
-        // Load checkpoint if checkpointer is configured (for resume support)
-        let mut saved_checkpoint_exists = false;
-        let (mut channels, mut channel_versions, mut versions_seen) =
-            if let Some(ref cp) = self.checkpointer {
-                match cp.get_tuple(config) {
-                    Ok(Some(tuple)) => {
-                        saved_checkpoint_exists = true;
-                        // Restore channels from checkpoint
-                        let cp_channels: HashMap<String, Option<JsonValue>> = tuple
-                            .checkpoint
-                            .channel_values
-                            .iter()
-                            .map(|(k, v)| (k.clone(), Some(v.clone())))
-                            .collect();
-                        let restored = channels_from_checkpoint(
-                            &self.channels,
-                            &cp_channels,
-                        );
-
-                        // Apply non-RESUME pending writes from the checkpoint.
-                        // RESUME writes are skipped because the new Command input
-                        // will provide the fresh resume value.
-                        if let Some(ref pending) = tuple.pending_writes {
-                            for (_task_id, channel, value) in pending {
-                                if channel != RESUME {
-                                    if let Some(ch) = restored.get(channel) {
-                                        ch.update(&[value.clone()]).ok();
-                                    }
-                                }
-                            }
-                        }
-
-                        (
-                            restored,
-                            tuple.checkpoint.channel_versions.clone(),
-                            tuple.checkpoint.versions_seen.clone(),
-                        )
-                    }
-                    _ => (
-                        self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
-                        HashMap::new(),
-                        HashMap::new(),
-                    ),
-                }
-            } else {
-                (
-                    self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
-                    HashMap::new(),
-                    HashMap::new(),
-                )
-            };
-
-        // BSP loop state
-        let mut step: u64 = 0;
-        let max_steps = config.get_recursion_limit().unwrap_or(self.recursion_limit);
-        let mut last_output = JsonValue::Null;
-        let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
-
-        // When loading a checkpoint with existing versions, new trigger channel
-        // writes need versions higher than what nodes have already seen.
-        // We compute an offset so that version = format!("{:032}", offset + step).
-        let version_offset: u64 = if saved_checkpoint_exists {
-            channel_versions
-                .values()
-                .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-                .max()
-                .unwrap_or(0)
-                + 1
-        } else {
-            0
-        };
-
-        // Check if input is a Command (for resume/goto/update).
-        // Must parse BEFORE writing input to channels so we can skip
-        // channel writes on resume (Command is not real user input).
-        let is_resuming = if let Ok(cmd) = serde_json::from_value::<Command>(input.clone()) {
-            let cmd_writes = map_command(&cmd);
-            let has_resume = cmd_writes.iter().any(|(_, chan, _)| chan == RESUME);
-            pending_writes.extend(cmd_writes);
-            has_resume
-        } else {
-            false
-        };
-
-        // Check if this is a resume-from-checkpoint (fork) with Null input.
-        // In this case, the checkpoint already has trigger channels set from
-        // the previous execution, so we skip input mapping and START edge writes.
-        let is_fork = input.is_null() && saved_checkpoint_exists;
-
-        if !is_resuming && !is_fork {
-            // Map input to channels (only for fresh invocations, not resume or fork).
-            // Input goes to START channel, then START node passes it through.
-            // We also write input entries to their corresponding state channels
-            // so that nodes (like the agent) can read them.
-            let input_channels = vec![START.to_string()];
-            let input_writes = map_input(&input_channels, input);
-
-            // Apply input writes to channels (START channel)
-            for (chan, val) in &input_writes {
-                if let Some(ch) = channels.get(chan) {
-                    ch.update(&[val.clone()]).ok();
-                }
-            }
-
-            // Also write input entries to state channels so nodes can read them.
-            // e.g., {"messages": [...]} → write [...] to the "messages" channel
-            if let Some(obj) = input.as_object() {
-                for (key, val) in obj {
-                    if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
-                        if let Some(ch) = channels.get(key) {
-                            ch.update(&[val.clone()]).ok();
-                        }
-                    }
-                }
-            }
-
-            // Mark initial channels as versioned
-            for (chan, _) in &input_writes {
-                channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", version_offset + step)));
-            }
-
-            // Write to trigger channels for edges from START.
-            // This kicks off the first nodes in the graph.
-            for (start, end) in &self.edges {
-                if start == START && end != END {
-                    let trigger_ch = format!("branch:to:{}", end);
-                    if let Some(ch) = channels.get(&trigger_ch) {
-                        ch.update(&[JsonValue::String(end.clone())]).ok();
-                        channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", version_offset + step)));
-                    }
-                }
-            }
-        }
-
-        // Super-step loop
-        while step < max_steps {
-            // PLAN: prepare next tasks
-            let checkpoint_id = format!("{:032}", version_offset + step);
-            let mut tasks = prepare_next_tasks(
-                &pregel_nodes,
-                &channels,
-                config,
-                version_offset + step,
-                &mut versions_seen,
-                &trigger_to_nodes,
-                None,
-                &checkpoint_id,
-                &pending_writes,
-                &channel_versions,
-            );
-
-            if tasks.is_empty() {
-                // No more tasks — done
-                break;
-            }
-
-            // Check interrupt_before
-            if !self.interrupt_before.is_empty() {
-                let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
-                if task_names.iter().any(|n| self.interrupt_before.contains(n)) {
-                    // Save checkpoint before returning
-                    if let Some(ref cp) = self.checkpointer {
-                        self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
-                    }
-                    let output_keys: Vec<String> = channels
-                        .keys()
-                        .filter(|k| {
-                            !k.starts_with("branch:") && !k.starts_with("join:") && *k != START
-                        })
-                        .cloned()
-                        .collect();
-                    return Ok(read_channels(&channels, &output_keys));
-                }
-            }
-
-            // EXECUTE: run tasks
-            let runner = PregelRunner::new(self.store.clone().map(|_| {
-                // Create a minimal Runtime for the runner
-                Arc::new(crate::runtime::Runtime {
-                    context: (),
-                    store: self.store.clone(),
-                    stream_writer: None,
-                    previous: None,
-                    execution_info: None,
-                    server_info: None,
-                })
-            }));
-
-            match runner.run_tasks(&mut tasks).await {
-                Ok(()) => {}
-                Err(crate::pregel::runner::RunnerError::Interrupt { task_id, interrupt }) => {
-                   
-                    // Even when one task is interrupted, other tasks in the same
-                    // super-step may have already completed and written trigger
-                    // channels for downstream nodes. We must apply those writes
-                    // before saving the checkpoint so they survive across the
-                    // interrupt/resume boundary. The interrupted task is excluded
-                    // so its versions_seen is NOT updated, preserving its ability
-                    // to re-trigger on resume.
-                    {
-                        // Update versions_seen only for completed tasks
-                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
-                            let seen = versions_seen.entry(task.name.clone()).or_default();
-                            for trigger in &task.triggers {
-                                if let Some(ver) = channel_versions.get(trigger) {
-                                    seen.insert(trigger.clone(), ver.clone());
-                                }
-                            }
-                        }
-                        // Collect writes from completed tasks
-                        let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
-                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
-                            for (chan, val) in &task.writes {
-                                if chan != crate::constants::TASKS && chan != crate::constants::INTERRUPT {
-                                    writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
-                                }
-                            }
-                        }
-                        // Apply to channels and bump versions
-                        for (chan, vals) in &writes_by_channel {
-                            if let Some(ch) = channels.get(chan) {
-                                if ch.update(vals).unwrap_or(false) {
-                                    let cur = channel_versions.get(chan);
-                                    let new_ver = cur
-                                        .and_then(|v| v.as_str())
-                                        .and_then(|s| s.parse::<u64>().ok())
-                                        .unwrap_or(0) + 1;
-                                    channel_versions.insert(
-                                        chan.clone(),
-                                        JsonValue::String(format!("{:032}", new_ver)),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    if let Some(ref cp) = self.checkpointer {
-                        // Checkpoint now includes completed tasks' channel writes
-                        self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
-                        // Save interrupt info as pending writes so get_state can retrieve them
-                        let interrupt_writes: Vec<(String, String, JsonValue)> = interrupt
-                            .interrupts
-                            .iter()
-                            .map(|iv| {
-                                let val = serde_json::to_value(iv).unwrap_or(JsonValue::Null);
-                                (task_id.clone(), crate::constants::INTERRUPT.to_string(), val)
-                            })
-                            .collect();
-                        if !interrupt_writes.is_empty() {
-                            if let Err(e) = cp.put_writes(config, &interrupt_writes, &task_id, "") {
-                                eprintln!("[CHECKPOINT] Failed to save interrupt writes: {}", e);
-                            }
-                        }
-                    }
-                    let output_keys: Vec<String> = channels
-                        .keys()
-                        .filter(|k| {
-                            !k.starts_with("branch:") && !k.starts_with("join:") && *k != START
-                        })
-                        .cloned()
-                        .collect();
-                    return Ok(read_channels(&channels, &output_keys));
-                }
-                Err(other) => return Err(RunnableError::Runner(other.to_string())),
-            }
-
-            // UPDATE: apply writes to channels
-            let _updated = apply_writes(
-                &mut channels,
-                &tasks,
-                &mut versions_seen,
-                &mut channel_versions,
-                &trigger_to_nodes,
-                |current| {
-                    let num = current
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    JsonValue::String(format!("{:032}", num + 1))
-                },
-            );
-
-            // Read output after each step
-            let output_keys: Vec<String> = channels
-                .keys()
-                .filter(|k| {
-                    !k.starts_with("branch:") && !k.starts_with("join:") && *k != START
-                })
-                .cloned()
-                .collect();
-            let output = read_channels(&channels, &output_keys);
-            if !output.is_null() {
-                last_output = output;
-            }
-
-            // Save "loop" checkpoint after each super-step completes.
-            // Matches Python's _put_checkpoint({"source": "loop"}) in after_tick().
-            if let Some(ref cp) = self.checkpointer {
-                self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
-            }
-
-            // Check interrupt_after
-            if !self.interrupt_after.is_empty() {
-                let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
-                if task_names.iter().any(|n| self.interrupt_after.contains(n)) {
-                    // Save checkpoint before returning
-                    if let Some(ref cp) = self.checkpointer {
-                        self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
-                    }
-                    return Ok(last_output);
-                }
-            }
-
-            step += 1;
-        }
-
-        // Note: the last "loop" checkpoint (saved after apply_writes) already
-        // captures the final state. No need to save another one here.
-
-        Ok(last_output)
+        self.run_pregel_inner(input, config, None).await
     }
 
-    /// Stream graph execution results.
-    ///
-    /// Returns a `ReceiverStream` that yields `StreamPart` chunks as the
-    /// graph executes. The stream completes when the graph finishes or
-    /// encounters an interrupt.
-    ///
-    /// # Arguments
-    /// * `input` - The input state
-    /// * `config` - Runtime configuration
-    /// * `stream_modes` - Which modes to stream (e.g., `vec![StreamMode::Updates]`)
-    ///
-    /// # Example
-    /// ```ignore
-    /// use langgraph::prelude::*;
-    /// use tokio_stream::StreamExt;
-    ///
-    /// let mut stream = compiled.astream(&input, &config, vec![StreamMode::Updates]);
-    /// while let Some(part) = stream.next().await {
-    ///     println!("{:?}", part);
-    /// }
-    /// ```
+    /// Streaming invocation: runs the BSP loop and emits `StreamPart`s via `tx`.
+    async fn run_pregel_streaming(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+        modes: &HashSet<StreamMode>,
+        tx: &mpsc::Sender<StreamPart>,
+    ) -> Result<JsonValue, RunnableError> {
+        // Set up the custom-stream forwarder if Custom mode is requested.
+        let (custom_tx, has_custom) = if modes.contains(&StreamMode::Custom) {
+            let (ctx, mut crx) = mpsc::channel::<JsonValue>(64);
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                while let Some(data) = crx.recv().await {
+                    let _ = tx_clone.send(StreamPart::custom(vec![], data)).await;
+                }
+            });
+            (Some(ctx), true)
+        } else {
+            (None, false)
+        };
+        let _ = has_custom; // suppresses warning; custom_tx presence implies has_custom
+
+        let ctx = StreamCtx { modes, tx, custom_tx };
+        self.run_pregel_inner(input, config, Some(&ctx)).await
+    }
+
+    /// Public streaming API: returns a `ReceiverStream` of `StreamPart`s.
     pub fn astream(
         &self,
         input: &JsonValue,
@@ -1526,15 +1289,22 @@ impl CompiledStateGraph {
         ReceiverStream::new(rx)
     }
 
-    /// Internal: run the BSP loop with streaming emission points.
-    async fn run_pregel_streaming(
+    // ────────────────────────────────────────────────────────────────────────
+    // Unified BSP loop (previously duplicated as run_pregel / run_pregel_streaming)
+    // ────────────────────────────────────────────────────────────────────────
+    //
+    // `stream` is `None` in non-streaming mode and `Some(&ctx)` in streaming
+    // mode. Every streaming emit is guarded by `if let Some(s) = stream`.
+    // The core logic — checkpoint loading, task preparation, execution,
+    // apply_writes, interrupt handling — is identical in both modes.
+    async fn run_pregel_inner(
         &self,
         input: &JsonValue,
         config: &RunnableConfig,
-        modes: &HashSet<StreamMode>,
-        tx: &mpsc::Sender<StreamPart>,
+        stream: Option<&StreamCtx<'_>>,
     ) -> Result<JsonValue, RunnableError> {
-        // Build PregelNode specs
+        // ── Setup ────────────────────────────────────────────────────────────
+
         let pregel_nodes = build_pregel_nodes(
             &self.nodes,
             &self.edges,
@@ -1542,10 +1312,9 @@ impl CompiledStateGraph {
             &self.branches,
             &self.channels,
         );
-
         let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
 
-        // Load checkpoint if checkpointer is configured
+        // Load checkpoint (for resume support)
         let mut saved_checkpoint_exists = false;
         let (mut channels, mut channel_versions, mut versions_seen) =
             if let Some(ref cp) = self.checkpointer {
@@ -1558,12 +1327,9 @@ impl CompiledStateGraph {
                             .iter()
                             .map(|(k, v)| (k.clone(), Some(v.clone())))
                             .collect();
-                        let restored = channels_from_checkpoint(
-                            &self.channels,
-                            &cp_channels,
-                        );
+                        let restored = channels_from_checkpoint(&self.channels, &cp_channels);
 
-                        // Apply non-RESUME pending writes
+                        // Apply non-RESUME pending writes from the checkpoint
                         if let Some(ref pending) = tuple.pending_writes {
                             for (_task_id, channel, value) in pending {
                                 if channel != RESUME {
@@ -1594,15 +1360,14 @@ impl CompiledStateGraph {
                 )
             };
 
-        // BSP loop state
+        // BSP loop counters
         let mut step: u64 = 0;
         let max_steps = config.get_recursion_limit().unwrap_or(self.recursion_limit);
         let mut last_output = JsonValue::Null;
         let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
 
-        // When loading a checkpoint with existing versions, new trigger channel
-        // writes need versions higher than what nodes have already seen.
-        // We compute an offset so that version = format!("{:032}", offset + step).
+        // Version offset: ensures new trigger writes have strictly higher
+        // versions than anything the checkpoint has already seen.
         let version_offset: u64 = if saved_checkpoint_exists {
             channel_versions
                 .values()
@@ -1614,21 +1379,7 @@ impl CompiledStateGraph {
             0
         };
 
-        // Create custom stream channel if custom mode is requested
-        let (custom_tx, mut custom_rx) = mpsc::channel::<JsonValue>(64);
-        let has_custom = modes.contains(&StreamMode::Custom);
-
-        // Spawn a forwarder task for custom stream data
-        if has_custom {
-            let tx_clone = tx.clone();
-            tokio::spawn(async move {
-                while let Some(data) = custom_rx.recv().await {
-                    let _ = tx_clone.send(StreamPart::custom(vec![], data)).await;
-                }
-            });
-        }
-
-        // Check if input is a Command (for resume/goto/update)
+        // Detect resume-from-Command vs. fresh invocation vs. fork
         let is_resuming = if let Ok(cmd) = serde_json::from_value::<Command>(input.clone()) {
             let cmd_writes = map_command(&cmd);
             let has_resume = cmd_writes.iter().any(|(_, chan, _)| chan == RESUME);
@@ -1637,21 +1388,16 @@ impl CompiledStateGraph {
         } else {
             false
         };
-
-        // Check if this is a resume-from-checkpoint (fork) with Null input
         let is_fork = input.is_null() && saved_checkpoint_exists;
 
+        // Write input to channels on a fresh (non-resume, non-fork) invocation
         if !is_resuming && !is_fork {
-            // Map input to channels
-            let input_channels = vec![START.to_string()];
-            let input_writes = map_input(&input_channels, input);
-
+            let input_writes = map_input(&[START.to_string()], input);
             for (chan, val) in &input_writes {
                 if let Some(ch) = channels.get(chan) {
                     ch.update(&[val.clone()]).ok();
                 }
             }
-
             if let Some(obj) = input.as_object() {
                 for (key, val) in obj {
                     if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
@@ -1661,27 +1407,33 @@ impl CompiledStateGraph {
                     }
                 }
             }
-
-            // Mark initial channels as versioned
             for (chan, _) in &input_writes {
-                channel_versions.insert(chan.clone(), JsonValue::String(format!("{:032}", version_offset + step)));
+                channel_versions.insert(
+                    chan.clone(),
+                    JsonValue::String(format!("{:032}", version_offset + step)),
+                );
             }
-
-            // Write to trigger channels for edges from START
+            // Kick off the first nodes by writing START edge trigger channels
             for (start, end) in &self.edges {
                 if start == START && end != END {
                     let trigger_ch = format!("branch:to:{}", end);
                     if let Some(ch) = channels.get(&trigger_ch) {
                         ch.update(&[JsonValue::String(end.clone())]).ok();
-                        channel_versions.insert(trigger_ch, JsonValue::String(format!("{:032}", version_offset + step)));
+                        channel_versions.insert(
+                            trigger_ch,
+                            JsonValue::String(format!("{:032}", version_offset + step)),
+                        );
                     }
                 }
             }
         }
 
-        // Super-step loop
+        // ── Super-step loop ──────────────────────────────────────────────────
+
         while step < max_steps {
             let checkpoint_id = format!("{:032}", version_offset + step);
+
+            // PLAN: determine which nodes to run this step
             let mut tasks = prepare_next_tasks(
                 &pregel_nodes,
                 &channels,
@@ -1699,95 +1451,89 @@ impl CompiledStateGraph {
                 break;
             }
 
-            // Emit tasks start events
-            if modes.contains(&StreamMode::Tasks) {
-                for task in &tasks {
-                    let data = serde_json::json!({
-                        "id": task.id,
-                        "name": task.name,
-                        "triggers": task.triggers,
-                    });
-                    let _ = tx.send(StreamPart::tasks(vec![], data)).await;
+            // ── Streaming: emit task-start events ───────────────────────────
+            if let Some(s) = stream {
+                if s.has(&StreamMode::Tasks) {
+                    for task in &tasks {
+                        let data = serde_json::json!({
+                            "id": task.id,
+                            "name": task.name,
+                            "triggers": task.triggers,
+                        });
+                        let _ = s.tx.send(StreamPart::tasks(vec![], data)).await;
+                    }
                 }
             }
 
-            // Check interrupt_before
+            // interrupt_before: pause before running the matched nodes
             if !self.interrupt_before.is_empty() {
                 let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
                 if task_names.iter().any(|n| self.interrupt_before.contains(n)) {
-                    // Emit final values if in values mode
-                    if modes.contains(&StreamMode::Values) {
-                        let output_keys: Vec<String> = channels.keys()
-                            .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                            .cloned().collect();
-                        let values = read_channels(&channels, &output_keys);
-                        let _ = tx.send(StreamPart::values(vec![], values)).await;
+                    if let Some(ref cp) = self.checkpointer {
+                        self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
                     }
-                    let output_keys: Vec<String> = channels.keys()
-                        .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                        .cloned().collect();
-                    return Ok(read_channels(&channels, &output_keys));
+                    // Streaming: emit values before returning
+                    if let Some(s) = stream {
+                        if s.has(&StreamMode::Values) {
+                            let keys = output_channel_keys(&channels);
+                            let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                        }
+                    }
+                    let keys = output_channel_keys(&channels);
+                    return Ok(read_channels(&channels, &keys));
                 }
             }
 
-            // Build runner with stream writer if custom mode
-            let runtime = Arc::new(crate::runtime::Runtime {
-                context: (),
-                store: self.store.clone(),
-                stream_writer: if has_custom { Some(custom_tx.clone()) } else { None },
-                previous: None,
-                execution_info: None,
-                server_info: None,
-            });
-            let runner = if has_custom {
-                PregelRunner::new(Some(runtime.clone()))
-                    .with_stream_writer(custom_tx.clone())
+            // EXECUTE: build runner (with custom-stream writer in streaming mode)
+            let runner = if let Some(s) = stream {
+                let runtime = Arc::new(crate::runtime::Runtime {
+                    context: (),
+                    store: self.store.clone(),
+                    stream_writer: s.custom_tx.clone(),
+                    previous: None,
+                    execution_info: None,
+                    server_info: None,
+                });
+                if s.custom_tx.is_some() {
+                    PregelRunner::new(Some(runtime.clone()))
+                        .with_stream_writer(s.custom_tx.clone().unwrap())
+                } else {
+                    PregelRunner::new(Some(runtime))
+                }
             } else {
-                PregelRunner::new(Some(runtime.clone()))
+                PregelRunner::new(self.store.clone().map(|_| {
+                    Arc::new(crate::runtime::Runtime {
+                        context: (),
+                        store: self.store.clone(),
+                        stream_writer: None,
+                        previous: None,
+                        execution_info: None,
+                        server_info: None,
+                    })
+                }))
             };
 
             match runner.run_tasks(&mut tasks).await {
                 Ok(()) => {}
+
                 Err(crate::pregel::runner::RunnerError::Interrupt { task_id, interrupt }) => {
-                  
-                    // before saving checkpoint so trigger channels are preserved.
-                    {
-                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
-                            let seen = versions_seen.entry(task.name.clone()).or_default();
-                            for trigger in &task.triggers {
-                                if let Some(ver) = channel_versions.get(trigger) {
-                                    seen.insert(trigger.clone(), ver.clone());
-                                }
-                            }
-                        }
-                        let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
-                        for task in tasks.iter().filter(|t| t.id != task_id && !t.writes.is_empty()) {
-                            for (chan, val) in &task.writes {
-                                if chan != crate::constants::TASKS && chan != crate::constants::INTERRUPT {
-                                    writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
-                                }
-                            }
-                        }
-                        for (chan, vals) in &writes_by_channel {
-                            if let Some(ch) = channels.get(chan) {
-                                if ch.update(vals).unwrap_or(false) {
-                                    let cur = channel_versions.get(chan);
-                                    let new_ver = cur
-                                        .and_then(|v| v.as_str())
-                                        .and_then(|s| s.parse::<u64>().ok())
-                                        .unwrap_or(0) + 1;
-                                    channel_versions.insert(
-                                        chan.clone(),
-                                        JsonValue::String(format!("{:032}", new_ver)),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    // Save checkpoint + interrupt pending_writes (was missing in streaming path)
+                    // Mirrors Python's _suppress_interrupt:
+                    // Apply writes from tasks that completed *before* the interrupt
+                    // so their trigger-channel writes survive into the checkpoint.
+                    // The interrupted task is excluded so it re-triggers on resume.
+                    apply_completed_writes(
+                        &task_id,
+                        &tasks,
+                        &channels,
+                        &mut versions_seen,
+                        &mut channel_versions,
+                    );
+
+                    // Save checkpoint (now includes completed tasks' channel writes)
                     if let Some(ref cp) = self.checkpointer {
                         self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
-                        let interrupt_writes: Vec<(String, String, JsonValue)> = interrupt
+                        // Save interrupt as pending writes for get_state()
+                        let iw: Vec<(String, String, JsonValue)> = interrupt
                             .interrupts
                             .iter()
                             .map(|iv| {
@@ -1795,85 +1541,79 @@ impl CompiledStateGraph {
                                 (task_id.clone(), crate::constants::INTERRUPT.to_string(), val)
                             })
                             .collect();
-                        if !interrupt_writes.is_empty() {
-                            if let Err(e) = cp.put_writes(config, &interrupt_writes, &task_id, "") {
+                        if !iw.is_empty() {
+                            if let Err(e) = cp.put_writes(config, &iw, &task_id, "") {
                                 eprintln!("[CHECKPOINT] Failed to save interrupt writes: {}", e);
                             }
                         }
                     }
-                    if modes.contains(&StreamMode::Values) {
-                        let output_keys: Vec<String> = channels.keys()
-                            .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                            .cloned().collect();
-                        let values = read_channels(&channels, &output_keys);
-                        let _ = tx.send(StreamPart::values(vec![], values)).await;
+
+                    // Streaming: emit values before returning
+                    if let Some(s) = stream {
+                        if s.has(&StreamMode::Values) {
+                            let keys = output_channel_keys(&channels);
+                            let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                        }
                     }
-                    let output_keys: Vec<String> = channels.keys()
-                        .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                        .cloned().collect();
-                    return Ok(read_channels(&channels, &output_keys));
+
+                    let keys = output_channel_keys(&channels);
+                    return Ok(read_channels(&channels, &keys));
                 }
+
                 Err(other) => return Err(RunnableError::Runner(other.to_string())),
             }
 
-            // Emit updates per node
-            if modes.contains(&StreamMode::Updates) {
-                for task in &tasks {
-                    if !task.writes.is_empty() {
-                        let mut node_updates = serde_json::Map::new();
-                        for (chan, val) in &task.writes {
-                            if !chan.starts_with("branch:") && !chan.starts_with("join:") {
-                                node_updates.insert(chan.clone(), val.clone());
+            // ── Streaming: emit per-node updates ────────────────────────────
+            if let Some(s) = stream {
+                if s.has(&StreamMode::Updates) {
+                    for task in &tasks {
+                        if !task.writes.is_empty() {
+                            let mut node_updates = serde_json::Map::new();
+                            for (chan, val) in &task.writes {
+                                if !chan.starts_with("branch:") && !chan.starts_with("join:") {
+                                    node_updates.insert(chan.clone(), val.clone());
+                                }
                             }
-                        }
-                        if !node_updates.is_empty() {
-                            let data = serde_json::json!({ &task.name: node_updates });
-                            let _ = tx.send(StreamPart::updates(vec![], data)).await;
+                            if !node_updates.is_empty() {
+                                let data = serde_json::json!({ &task.name: node_updates });
+                                let _ = s.tx.send(StreamPart::updates(vec![], data)).await;
+                            }
                         }
                     }
                 }
             }
 
-            // Apply writes
+            // UPDATE: apply all task writes to channels
             apply_writes(
                 &mut channels,
                 &tasks,
                 &mut versions_seen,
                 &mut channel_versions,
                 &trigger_to_nodes,
-                |current| {
-                    let num = current
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    JsonValue::String(format!("{:032}", num + 1))
-                },
+                bump_version,
             );
 
-            // Save checkpoint after each super-step
+            // Save "loop" checkpoint after each completed super-step
             if let Some(ref cp) = self.checkpointer {
                 self.save_checkpoint(cp, config, &channels, &channel_versions, &versions_seen);
             }
 
-            // Emit values after writes
-            if modes.contains(&StreamMode::Values) {
-                let output_keys: Vec<String> = channels.keys()
-                    .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                    .cloned().collect();
-                let values = read_channels(&channels, &output_keys);
-                let _ = tx.send(StreamPart::values(vec![], values)).await;
+            // ── Streaming: emit values after writes ──────────────────────────
+            if let Some(s) = stream {
+                if s.has(&StreamMode::Values) {
+                    let keys = output_channel_keys(&channels);
+                    let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                }
             }
 
             // Read output
-            let output_keys: Vec<String> = channels.keys()
-                .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
-                .cloned().collect();
-            let output = read_channels(&channels, &output_keys);
+            let keys = output_channel_keys(&channels);
+            let output = read_channels(&channels, &keys);
             if !output.is_null() {
                 last_output = output;
             }
 
-            // Check interrupt_after
+            // interrupt_after: pause after the matched nodes complete
             if !self.interrupt_after.is_empty() {
                 let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
                 if task_names.iter().any(|n| self.interrupt_after.contains(n)) {
@@ -1886,6 +1626,8 @@ impl CompiledStateGraph {
 
         Ok(last_output)
     }
+
+
 }
 
 #[async_trait]

@@ -8,13 +8,10 @@
 ///                  → worker_b ─┴→ merger (join) → output → END
 ///
 
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 use langgraph::prelude::*;
-use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
 use langgraph_derive::StateGraph;
 
 // ── State ─────────────────────────────────────────────────────────────────
