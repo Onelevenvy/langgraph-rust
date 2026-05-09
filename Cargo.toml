@@ -96,3 +96,7 @@ path = "examples/join_edge_test.rs"
 [[example]]
 name = "tracing_demos"
 path = "examples/tracing_demos.rs"
+
+[[example]]
+name = "thinking_model"
+path = "examples/thinking_model.rs"

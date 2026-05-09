@@ -41,6 +41,9 @@ pub enum Message {
         /// Token usage from the LLM API response, if available.
         #[serde(default)]
         usage: Option<crate::traits::LlmUsage>,
+        /// Thinking/reasoning content from models that support it (e.g., DeepSeek, o1/o3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
     },
     /// A system message providing instructions.
     System {
@@ -159,6 +162,7 @@ impl Message {
             tool_calls: vec![],
             id: None,
             usage: None,
+            thinking: None,
         }
     }
 
@@ -169,6 +173,7 @@ impl Message {
             tool_calls,
             id: None,
             usage: None,
+            thinking: None,
         }
     }
 
@@ -179,6 +184,7 @@ impl Message {
             tool_calls: vec![],
             id: None,
             usage: Some(usage),
+            thinking: None,
         }
     }
 
@@ -193,6 +199,7 @@ impl Message {
             tool_calls,
             id: None,
             usage: Some(usage),
+            thinking: None,
         }
     }
 
@@ -201,6 +208,28 @@ impl Message {
         match self {
             Message::Ai { usage, .. } => usage.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Get the thinking/reasoning content, if available.
+    pub fn thinking(&self) -> Option<&str> {
+        match self {
+            Message::Ai { thinking, .. } => thinking.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Create an AI message with thinking/reasoning content.
+    pub fn ai_with_thinking(
+        content: impl Into<String>,
+        thinking: impl Into<String>,
+    ) -> Self {
+        Message::Ai {
+            content: MessageContent::Text(content.into()),
+            tool_calls: vec![],
+            id: None,
+            usage: None,
+            thinking: Some(thinking.into()),
         }
     }
 
@@ -239,9 +268,19 @@ impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Message::Human { content, .. } => write!(f, "[Human] {}", content_text(content)),
-            Message::Ai { content, tool_calls, .. } => {
+            Message::Ai { content, tool_calls, thinking, .. } => {
                 let text = content_text(content);
-                if tool_calls.is_empty() {
+                if let Some(t) = thinking {
+                    write!(f, "[Thinking] {}\n[AI] {}", t, text)?;
+                    if !tool_calls.is_empty() {
+                        let calls: Vec<String> = tool_calls
+                            .iter()
+                            .map(|tc| format!("{}({})", tc.name, tc.args))
+                            .collect();
+                        write!(f, " → {}", calls.join(", "))?;
+                    }
+                    Ok(())
+                } else if tool_calls.is_empty() {
                     write!(f, "[AI] {}", text)
                 } else {
                     let calls: Vec<String> = tool_calls

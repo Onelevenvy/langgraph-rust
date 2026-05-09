@@ -1,25 +1,183 @@
-use async_openai::config::OpenAIConfig;
-use async_openai::types::{
-    ChatCompletionRequestMessage, ChatCompletionStreamOptions,
-    CreateChatCompletionRequestArgs,
-};
-use async_openai::Client;
 use async_trait::async_trait;
 use futures::StreamExt;
+use reqwest_eventsource::{Event, RequestBuilderExt};
+use serde::{Deserialize, Serialize};
 
 use langgraph_checkpoint::config::RunnableConfig;
-use langgraph_prebuilt::{BaseChatModel, LlmUsage, Message, MessageStream, ModelError, ToolDef};
+use langgraph_prebuilt::{
+    BaseChatModel, LlmUsage, Message, MessageStream, ModelError, ToolCall, ToolDef,
+};
 
-use super::types::{from_openai_tool_call, to_openai_message, to_openai_tool};
+// ── Request types ──────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct RawMessage {
+    role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<RawToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct RawToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: RawFunctionCall,
+}
+
+#[derive(Serialize, Clone)]
+struct RawFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct RawToolDef {
+    #[serde(rename = "type")]
+    kind: String,
+    function: RawFunctionObject,
+}
+
+#[derive(Serialize)]
+struct RawFunctionObject {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct RawRequest {
+    model: String,
+    messages: Vec<RawMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frequency_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence_penalty: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<RawToolDef>>,
+    #[serde(skip_serializing_if = "is_false")]
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<StreamOptions>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
+#[derive(Serialize)]
+struct StreamOptions {
+    include_usage: bool,
+}
+
+// ── Response types ─────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RawResponse {
+    choices: Vec<RawChoice>,
+    #[serde(default)]
+    usage: Option<RawUsage>,
+}
+
+#[derive(Deserialize)]
+struct RawChoice {
+    message: RawResponseMessage,
+}
+
+#[derive(Deserialize)]
+struct RawResponseMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<RawToolCallResp>>,
+    /// Thinking/reasoning content from reasoning models.
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawToolCallResp {
+    id: String,
+    function: RawFunctionCallResp,
+}
+
+#[derive(Deserialize)]
+struct RawFunctionCallResp {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Deserialize)]
+struct RawUsage {
+    #[serde(default)]
+    prompt_tokens: u32,
+    #[serde(default)]
+    completion_tokens: u32,
+    #[serde(default)]
+    total_tokens: u32,
+}
+
+// ── Streaming types ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct StreamChunk {
+    choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage: Option<RawUsage>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    delta: StreamDelta,
+}
+
+#[derive(Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<StreamToolCall>>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamToolCall {
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<StreamFunction>,
+}
+
+#[derive(Deserialize)]
+struct StreamFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+// ── OpenAIModelConfig ──────────────────────────────────────────────
 
 /// Configuration for the OpenAI model.
 #[derive(Debug, Clone)]
 pub struct OpenAIModelConfig {
-    /// Model name (e.g., "gpt-4o", "gpt-4", "o1").
+    /// Model name (e.g., "gpt-4o", "o1", "deepseek-reasoner").
     pub model: String,
-    /// OpenAI API key.
+    /// API key.
     pub api_key: String,
-    /// Optional API base URL (for proxies or compatible APIs).
+    /// Optional API base URL (defaults to https://api.openai.com/v1).
     pub api_base: Option<String>,
     /// Temperature for sampling (0.0 - 2.0).
     pub temperature: Option<f32>,
@@ -48,12 +206,14 @@ impl Default for OpenAIModelConfig {
     }
 }
 
-/// OpenAI chat model implementation.
+// ── OpenAIModel ────────────────────────────────────────────────────
+
+/// OpenAI chat model implementation using raw HTTP requests.
 ///
-/// Wraps the `async-openai` client and implements `BaseChatModel`
-/// for use with LangGraph agents.
+/// Supports all OpenAI-compatible APIs including reasoning models that return
+/// `reasoning_content` (DeepSeek, SiliconFlow, etc.).
 pub struct OpenAIModel {
-    client: Client<OpenAIConfig>,
+    client: reqwest::Client,
     config: OpenAIModelConfig,
     tools: Vec<ToolDef>,
 }
@@ -61,16 +221,8 @@ pub struct OpenAIModel {
 impl OpenAIModel {
     /// Create a new OpenAI model with the given configuration.
     pub fn new(config: OpenAIModelConfig) -> Self {
-        let mut oai_config = OpenAIConfig::new().with_api_key(&config.api_key);
-
-        if let Some(ref base) = config.api_base {
-            oai_config = oai_config.with_api_base(base);
-        }
-
-        let client = Client::with_config(oai_config);
-
         Self {
-            client,
+            client: reqwest::Client::new(),
             config,
             tools: Vec::new(),
         }
@@ -104,40 +256,131 @@ impl OpenAIModel {
         }))
     }
 
-    /// Build the chat completion request.
-    fn build_request(
-        &self,
-        messages: &[Message],
-    ) -> Result<CreateChatCompletionRequestArgs, ModelError> {
-        let openai_msgs: Vec<ChatCompletionRequestMessage> =
-            messages.iter().filter_map(to_openai_message).collect();
+    fn api_url(&self) -> String {
+        let base = self
+            .config
+            .api_base
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1")
+            .trim_end_matches('/');
+        format!("{}/chat/completions", base)
+    }
 
-        let mut builder = CreateChatCompletionRequestArgs::default();
-        builder.model(&self.config.model).messages(openai_msgs);
+    fn build_messages(&self, messages: &[Message]) -> Vec<RawMessage> {
+        messages
+            .iter()
+            .filter_map(|msg| match msg {
+                Message::Human { content, .. } => Some(RawMessage {
+                    role: "user".to_string(),
+                    content: Some(content_text(content)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                }),
+                Message::Ai {
+                    content,
+                    tool_calls,
+                    ..
+                } => {
+                    let text = content_text(content);
+                    let tc = if tool_calls.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            tool_calls
+                                .iter()
+                                .enumerate()
+                                .map(|(i, tc)| RawToolCall {
+                                    id: tc
+                                        .id
+                                        .clone()
+                                        .unwrap_or_else(|| format!("call_{}", i)),
+                                    kind: "function".to_string(),
+                                    function: RawFunctionCall {
+                                        name: tc.name.clone(),
+                                        arguments: serde_json::to_string(&tc.args)
+                                            .unwrap_or_default(),
+                                    },
+                                })
+                                .collect(),
+                        )
+                    };
+                    Some(RawMessage {
+                        role: "assistant".to_string(),
+                        content: if text.is_empty() { None } else { Some(text) },
+                        tool_calls: tc,
+                        tool_call_id: None,
+                    })
+                }
+                Message::System { content, .. } => Some(RawMessage {
+                    role: "system".to_string(),
+                    content: Some(content_text(content)),
+                    tool_calls: None,
+                    tool_call_id: None,
+                }),
+                Message::Tool {
+                    content,
+                    tool_call_id,
+                    ..
+                } => Some(RawMessage {
+                    role: "tool".to_string(),
+                    content: Some(content_text(content)),
+                    tool_calls: None,
+                    tool_call_id: Some(tool_call_id.clone()),
+                }),
+                Message::Remove { .. } => None,
+            })
+            .collect()
+    }
 
-        if let Some(temp) = self.config.temperature {
-            builder.temperature(temp);
+    fn build_tools(&self) -> Option<Vec<RawToolDef>> {
+        if self.tools.is_empty() {
+            return None;
         }
-        if let Some(max) = self.config.max_tokens {
-            builder.max_tokens(max);
-        }
-        if let Some(tp) = self.config.top_p {
-            builder.top_p(tp);
-        }
-        if let Some(fp) = self.config.frequency_penalty {
-            builder.frequency_penalty(fp);
-        }
-        if let Some(pp) = self.config.presence_penalty {
-            builder.presence_penalty(pp);
-        }
+        Some(
+            self.tools
+                .iter()
+                .map(|t| RawToolDef {
+                    kind: "function".to_string(),
+                    function: RawFunctionObject {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone(),
+                    },
+                })
+                .collect(),
+        )
+    }
 
-        // Add tools if bound
-        if !self.tools.is_empty() {
-            let tool_defs: Vec<_> = self.tools.iter().map(to_openai_tool).collect();
-            builder.tools(tool_defs);
+    fn extract_usage(raw: &RawUsage) -> LlmUsage {
+        LlmUsage {
+            prompt_tokens: raw.prompt_tokens,
+            completion_tokens: raw.completion_tokens,
+            total_tokens: raw.total_tokens,
         }
+    }
 
-        Ok(builder)
+    fn build_message(
+        content: String,
+        tool_calls: Vec<ToolCall>,
+        thinking: Option<String>,
+        usage: Option<LlmUsage>,
+    ) -> Message {
+        let mut msg = match (tool_calls.is_empty(), usage) {
+            (true, None) => Message::ai(content),
+            (true, Some(u)) => Message::ai_with_usage(content, u),
+            (false, None) => Message::ai_with_tool_calls(content, tool_calls),
+            (false, Some(u)) => Message::ai_with_tool_calls_and_usage(content, tool_calls, u),
+        };
+        if let Some(t) = thinking {
+            if let Message::Ai {
+                thinking: ref mut th,
+                ..
+            } = msg
+            {
+                *th = Some(t);
+            }
+        }
+        msg
     }
 }
 
@@ -152,11 +395,8 @@ impl BaseChatModel for OpenAIModel {
         messages: &[Message],
         _config: &RunnableConfig,
     ) -> Result<Message, ModelError> {
-        // Use tokio runtime for sync invocation
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
-                // Already in a tokio context — use block_in_place
-                // which is safe from within an async runtime
                 tokio::task::block_in_place(|| handle.block_on(self.ainvoke(messages, _config)))
             }
             Err(_) => {
@@ -172,48 +412,73 @@ impl BaseChatModel for OpenAIModel {
         messages: &[Message],
         _config: &RunnableConfig,
     ) -> Result<Message, ModelError> {
-        let request = self
-            .build_request(messages)?
-            .build()
-            .map_err(|e| ModelError::Invocation(e.to_string()))?;
+        let request = RawRequest {
+            model: self.config.model.clone(),
+            messages: self.build_messages(messages),
+            temperature: self.config.temperature,
+            max_tokens: self.config.max_tokens,
+            top_p: self.config.top_p,
+            frequency_penalty: self.config.frequency_penalty,
+            presence_penalty: self.config.presence_penalty,
+            tools: self.build_tools(),
+            stream: false,
+            stream_options: None,
+        };
 
         let response = self
             .client
-            .chat()
-            .create(request)
+            .post(self.api_url())
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
             .await
             .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-        // Extract token usage from response
-        let usage = response.usage.map(|u| LlmUsage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        });
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ModelError::Invocation(format!(
+                "API error {}: {}",
+                status, body
+            )));
+        }
 
-        // Extract the first choice
-        let choice = response
+        let raw: RawResponse = response
+            .json()
+            .await
+            .map_err(|e| ModelError::Invocation(e.to_string()))?;
+
+        let choice = raw
             .choices
             .first()
             .ok_or_else(|| ModelError::Invocation("No choices in response".to_string()))?;
 
-        let msg = &choice.message;
+        let content = choice.message.content.clone().unwrap_or_default();
+        let thinking = choice.message.reasoning_content.clone();
+        let usage = raw.usage.as_ref().map(Self::extract_usage);
 
-        // Build tool calls if present
-        let tool_calls: Vec<langgraph_prebuilt::ToolCall> = msg
+        let tool_calls: Vec<ToolCall> = choice
+            .message
             .tool_calls
             .as_ref()
-            .map(|calls| calls.iter().map(from_openai_tool_call).collect())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|tc| {
+                        let args = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
+                        ToolCall {
+                            name: tc.function.name.clone(),
+                            args,
+                            id: Some(tc.id.clone()),
+                        }
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let content = msg.content.clone().unwrap_or_default();
-
-        match (tool_calls.is_empty(), usage) {
-            (true, None) => Ok(Message::ai(content)),
-            (true, Some(u)) => Ok(Message::ai_with_usage(content, u)),
-            (false, None) => Ok(Message::ai_with_tool_calls(content, tool_calls)),
-            (false, Some(u)) => Ok(Message::ai_with_tool_calls_and_usage(content, tool_calls, u)),
-        }
+        Ok(Self::build_message(content, tool_calls, thinking, usage))
     }
 
     fn astream<'a>(
@@ -222,114 +487,112 @@ impl BaseChatModel for OpenAIModel {
         _config: &'a RunnableConfig,
     ) -> MessageStream<'a> {
         Box::pin(async_stream::stream! {
-            let request = self
-                .build_request(messages)?
-                .stream(true)
-                .stream_options(ChatCompletionStreamOptions {
-                    include_usage: true,
-                })
-                .build()
-                .map_err(|e| ModelError::Invocation(e.to_string()))?;
+            let request = RawRequest {
+                model: self.config.model.clone(),
+                messages: self.build_messages(messages),
+                temperature: self.config.temperature,
+                max_tokens: self.config.max_tokens,
+                top_p: self.config.top_p,
+                frequency_penalty: self.config.frequency_penalty,
+                presence_penalty: self.config.presence_penalty,
+                tools: self.build_tools(),
+                stream: true,
+                stream_options: Some(StreamOptions { include_usage: true }),
+            };
 
-            let mut stream = self
+            let es_builder = self
                 .client
-                .chat()
-                .create_stream(request)
-                .await
+                .post(self.api_url())
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&request);
+
+            let mut event_source = es_builder
+                .eventsource()
                 .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
             let mut accumulated_content = String::new();
-            // Accumulate tool calls by index: (id, name, arguments_buffer)
+            let mut accumulated_thinking = String::new();
             let mut tool_call_buffers: Vec<(Option<String>, String, String)> = Vec::new();
             let mut usage: Option<LlmUsage> = None;
 
-            while let Some(result) = stream.next().await {
-                let chunk = result.map_err(|e| ModelError::Invocation(e.to_string()))?;
+            while let Some(event) = event_source.next().await {
+                let event = event.map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-                // Capture usage from the final chunk (sent when stream_options.include_usage=true)
-                if let Some(u) = chunk.usage {
-                    usage = Some(LlmUsage {
-                        prompt_tokens: u.prompt_tokens,
-                        completion_tokens: u.completion_tokens,
-                        total_tokens: u.total_tokens,
-                    });
-                }
+                match event {
+                    Event::Open => continue,
+                    Event::Message(msg) => {
+                        if msg.data == "[DONE]" {
+                            break;
+                        }
 
-                if let Some(choice) = chunk.choices.first() {
-                    let delta = &choice.delta;
+                        let chunk: StreamChunk = serde_json::from_str(&msg.data)
+                            .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-                    // Yield delta content only (not accumulated)
-                    if let Some(content) = &delta.content {
-                        accumulated_content.push_str(content);
-                        yield Ok(Message::ai(content.clone()));
-                    }
+                        if let Some(u) = chunk.usage {
+                            usage = Some(Self::extract_usage(&u));
+                        }
 
-                    // Accumulate tool calls
-                    if let Some(calls) = &delta.tool_calls {
-                        for tc in calls {
-                            let idx = tc.index as usize;
-                            // Expand buffer if needed
-                            while tool_call_buffers.len() <= idx {
-                                tool_call_buffers.push((None, String::new(), String::new()));
+                        if let Some(choice) = chunk.choices.first() {
+                            let delta = &choice.delta;
+
+                            // Stream thinking content
+                            if let Some(ref thinking) = delta.reasoning_content {
+                                accumulated_thinking.push_str(thinking);
+                                yield Ok(Message::ai_with_thinking("", thinking.clone()));
                             }
-                            let buf = &mut tool_call_buffers[idx];
-                            if let Some(id) = &tc.id {
-                                buf.0 = Some(id.clone());
+
+                            // Stream answer content
+                            if let Some(ref content) = delta.content {
+                                accumulated_content.push_str(content);
+                                yield Ok(Message::ai(content.clone()));
                             }
-                            if let Some(func) = &tc.function {
-                                if let Some(name) = &func.name {
-                                    buf.1 = name.clone();
-                                }
-                                if let Some(args) = &func.arguments {
-                                    buf.2.push_str(args);
+
+                            // Accumulate tool calls
+                            if let Some(calls) = &delta.tool_calls {
+                                for tc in calls {
+                                    let idx = tc.index;
+                                    while tool_call_buffers.len() <= idx {
+                                        tool_call_buffers.push((None, String::new(), String::new()));
+                                    }
+                                    let buf = &mut tool_call_buffers[idx];
+                                    if let Some(id) = &tc.id {
+                                        buf.0 = Some(id.clone());
+                                    }
+                                    if let Some(func) = &tc.function {
+                                        if let Some(name) = &func.name {
+                                            buf.1 = name.clone();
+                                        }
+                                        if let Some(args) = &func.arguments {
+                                            buf.2.push_str(args);
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-
-                    if choice.finish_reason.is_some() {
-                        // Don't break — the usage chunk may arrive after finish_reason.
-                        // Continue reading until the stream ends naturally.
                     }
                 }
             }
 
             // Build final tool calls
-            if !tool_call_buffers.is_empty() {
-                let tool_calls: Vec<langgraph_prebuilt::ToolCall> = tool_call_buffers
-                    .into_iter()
-                    .filter(|(_, name, _)| !name.is_empty())
-                    .map(|(id, name, args)| {
-                        let args_json = serde_json::from_str(&args)
-                            .unwrap_or(serde_json::json!({}));
-                        langgraph_prebuilt::ToolCall {
-                            name,
-                            args: args_json,
-                            id,
-                        }
-                    })
-                    .collect();
+            let tool_calls: Vec<ToolCall> = tool_call_buffers
+                .into_iter()
+                .filter(|(_, name, _)| !name.is_empty())
+                .map(|(id, name, args)| {
+                    let args_json = serde_json::from_str(&args)
+                        .unwrap_or(serde_json::json!({}));
+                    ToolCall { name, args: args_json, id }
+                })
+                .collect();
 
-                if !tool_calls.is_empty() {
-                    match usage {
-                        Some(u) => yield Ok(Message::ai_with_tool_calls_and_usage(
-                            accumulated_content,
-                            tool_calls,
-                            u,
-                        )),
-                        None => yield Ok(Message::ai_with_tool_calls(
-                            accumulated_content,
-                            tool_calls,
-                        )),
-                    }
-                    return;
-                }
-            }
+            let mut final_msg = Self::build_message(
+                accumulated_content,
+                tool_calls,
+                if accumulated_thinking.is_empty() { None } else { Some(accumulated_thinking) },
+                usage,
+            );
 
-            // No tool calls — yield final message with usage if available
-            if let Some(u) = usage {
-                yield Ok(Message::ai_with_usage(accumulated_content, u));
-            }
+            yield Ok(final_msg);
         })
     }
 
@@ -340,10 +603,10 @@ impl BaseChatModel for OpenAIModel {
     }
 }
 
-/// An OpenAI-compatible model for use with local or alternative endpoints
-/// (e.g., Ollama, vLLM, LiteLLM, Azure OpenAI).
-///
-/// Uses the same OpenAI API format but with a custom base URL.
+// ── OpenAICompatModel ──────────────────────────────────────────────
+
+/// An OpenAI-compatible model for use with alternative endpoints
+/// (e.g., DeepSeek, Ollama, vLLM, LiteLLM, Azure OpenAI).
 pub struct OpenAICompatModel {
     inner: OpenAIModel,
 }
@@ -397,6 +660,22 @@ impl BaseChatModel for OpenAICompatModel {
     }
 }
 
+// ── Helpers ────────────────────────────────────────────────────────
+
+fn content_text(content: &langgraph_prebuilt::MessageContent) -> String {
+    match content {
+        langgraph_prebuilt::MessageContent::Text(s) => s.clone(),
+        langgraph_prebuilt::MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                langgraph_prebuilt::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,17 +687,17 @@ mod tests {
     }
 
     #[test]
-    fn test_build_request() {
+    fn test_build_messages() {
         let model = OpenAIModel::new(OpenAIModelConfig {
             model: "gpt-4o".to_string(),
             api_key: "test-key".to_string(),
-            temperature: Some(0.7),
             ..Default::default()
         });
 
         let messages = vec![Message::human("Hello")];
-        let request = model.build_request(&messages);
-        assert!(request.is_ok());
+        let raw = model.build_messages(&messages);
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].role, "user");
     }
 
     #[test]
@@ -443,5 +722,12 @@ mod tests {
 
         let bound = model.bind_tools(vec![tool]);
         assert_eq!(bound.name(), "OpenAI");
+    }
+
+    #[test]
+    fn test_thinking_field() {
+        let msg = Message::ai_with_thinking("The answer is 4", "Let me think: 2+2=4");
+        assert_eq!(msg.thinking(), Some("Let me think: 2+2=4"));
+        assert_eq!(msg.text(), Some("The answer is 4"));
     }
 }
