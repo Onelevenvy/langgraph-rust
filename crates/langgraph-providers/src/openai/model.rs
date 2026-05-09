@@ -1,5 +1,8 @@
 use async_openai::config::OpenAIConfig;
-use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequestArgs};
+use async_openai::types::{
+    ChatCompletionRequestMessage, ChatCompletionStreamOptions,
+    CreateChatCompletionRequestArgs,
+};
 use async_openai::Client;
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -222,6 +225,9 @@ impl BaseChatModel for OpenAIModel {
             let request = self
                 .build_request(messages)?
                 .stream(true)
+                .stream_options(ChatCompletionStreamOptions {
+                    include_usage: true,
+                })
                 .build()
                 .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
@@ -235,9 +241,19 @@ impl BaseChatModel for OpenAIModel {
             let mut accumulated_content = String::new();
             // Accumulate tool calls by index: (id, name, arguments_buffer)
             let mut tool_call_buffers: Vec<(Option<String>, String, String)> = Vec::new();
+            let mut usage: Option<LlmUsage> = None;
 
             while let Some(result) = stream.next().await {
                 let chunk = result.map_err(|e| ModelError::Invocation(e.to_string()))?;
+
+                // Capture usage from the final chunk (sent when stream_options.include_usage=true)
+                if let Some(u) = chunk.usage {
+                    usage = Some(LlmUsage {
+                        prompt_tokens: u.prompt_tokens,
+                        completion_tokens: u.completion_tokens,
+                        total_tokens: u.total_tokens,
+                    });
+                }
 
                 if let Some(choice) = chunk.choices.first() {
                     let delta = &choice.delta;
@@ -271,9 +287,9 @@ impl BaseChatModel for OpenAIModel {
                         }
                     }
 
-                    // Check for finish reason
                     if choice.finish_reason.is_some() {
-                        break;
+                        // Don't break — the usage chunk may arrive after finish_reason.
+                        // Continue reading until the stream ends naturally.
                     }
                 }
             }
@@ -295,11 +311,24 @@ impl BaseChatModel for OpenAIModel {
                     .collect();
 
                 if !tool_calls.is_empty() {
-                    yield Ok(Message::ai_with_tool_calls(
-                        accumulated_content,
-                        tool_calls,
-                    ));
+                    match usage {
+                        Some(u) => yield Ok(Message::ai_with_tool_calls_and_usage(
+                            accumulated_content,
+                            tool_calls,
+                            u,
+                        )),
+                        None => yield Ok(Message::ai_with_tool_calls(
+                            accumulated_content,
+                            tool_calls,
+                        )),
+                    }
+                    return;
                 }
+            }
+
+            // No tool calls — yield final message with usage if available
+            if let Some(u) = usage {
+                yield Ok(Message::ai_with_usage(accumulated_content, u));
             }
         })
     }

@@ -9,7 +9,6 @@ use serde_json::Value as JsonValue;
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
-use tokio_stream::StreamExt;
 
 /// Wrapper around any BaseChatModel that records LLM call traces.
 pub struct TracingChatModel<M: BaseChatModel> {
