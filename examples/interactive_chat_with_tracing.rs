@@ -5,7 +5,7 @@ use dotenvy::dotenv;
 use langgraph::prelude::*;
 use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
 use langgraph_checkpoint::config::RunnableConfigExt;
-use langgraph_derive::{tool, StateGraph};
+use langgraph_derive::{tool, StateGraph, Traceable};
 use langgraph_prebuilt::{
     prepare_tools, stream_llm, stream_and_print, tools_condition, BaseChatModel, Message,
     ToolNode,
@@ -13,11 +13,8 @@ use langgraph_prebuilt::{
 use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
 use serde::{Deserialize, Serialize};
 
-// Tracing imports
-use langgraph_tracing::{
-    EventBus, InMemoryTracingStore, TraceStatus, TracingChatModel, 
-    TracingGraphObserver,
-};
+// Tracing imports - only TracingChatModel needed for LLM wrapping
+use langgraph_tracing::TracingChatModel;
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -50,7 +47,7 @@ fn get_weather(location: String) -> Result<String, String> {
 // State
 // -------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, StateGraph)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, StateGraph, Traceable)]
 struct GraphState {
     #[channel(messages)]
     messages: Vec<Message>,
@@ -62,24 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Interactive Chat with Real-time Tracing");
     println!("========================================");
     println!("  1. Starting Tracing Server...");
-    
-    // Initialize tracing components
-    let store = Arc::new(InMemoryTracingStore::new());
-    let event_bus = EventBus::new();
 
-    // Start tracing server in background
-    let server_store = store.clone();
-    let server_bus = event_bus.clone();
-    tokio::spawn(async move {
-        langgraph_tracing::server::start(
-            "127.0.0.1:3333",
-            server_store,
-            server_bus,
-            Some("crates/langgraph-tracing/frontend/dist"),
-        )
-        .await
-        .unwrap();
-    });
+    // One-liner tracing setup via #[derive(Traceable)]
+    let mut tracing = GraphState::tracing_context();
+    tracing.start_server("127.0.0.1:3333");
 
     println!("  2. Tracing UI available at http://127.0.0.1:3333");
     println!("  3. Type 'quit' to exit.\n");
@@ -107,25 +90,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Node: LLM Call with dynamic tracing wrapper
     let model_arc = base_model.clone();
-    let store_clone = store.clone();
-    let bus_clone = event_bus.clone();
     let tool_defs = prepared.tool_defs.clone();
-    
+
+    // Access tracing internals for the node closure
+    let store = tracing.store().clone();
+    let bus = tracing.event_bus().clone();
+
     graph.add_node("llm_call", move |input: JsonValue, config: RunnableConfig| {
         let model = model_arc.clone();
-        let store = store_clone.clone();
-        let bus = bus_clone.clone();
+        let store = store.clone();
+        let bus = bus.clone();
         let tool_defs = tool_defs.clone();
-        
+
         async move {
-            // Get current trace_id from config
             let trace_id = config.get_configurable()
                 .and_then(|c| c.get("trace_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("default")
                 .to_string();
 
-            // Wrap model with tracing for THIS call
             let tracing_model = TracingChatModel::new(
                 model.bind_tools(tool_defs),
                 store,
@@ -142,9 +125,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     })?;
 
-    // Node: Tools with tracing wrapper
-    // Note: To trace tools correctly, we'd need to wrap them too.
-    // For simplicity, we'll focus on LLM tracing here.
     let tools_node: Arc<dyn Runnable> = Arc::new(ToolNode::new(prepared.tools.clone()));
     graph.add_node("tool_node", tools_node)?;
 
@@ -158,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Interactive loop
     let stdin = io::stdin();
     let mut turn = 0u32;
-    let mut observer = TracingGraphObserver::new(store.clone(), event_bus.clone());
 
     loop {
         print!("You: ");
@@ -181,28 +160,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "messages": [{"type": "human", "content": input_line}]
         });
 
-        // 1. Start a new trace for this turn
-        let trace_id = observer.on_graph_start("interactive_chat_turn", input.clone());
-
-        // 2. Prepare config with trace_id
+        // Single call: trace lifecycle is automatic
         let mut config = RunnableConfig::new();
         config.insert("configurable".to_string(), json!({
-            "thread_id": "interactive-session",
-            "trace_id": trace_id
+            "thread_id": "interactive-session"
         }));
 
-        // 3. Execute with streaming
-        let mut stream = app.astream(&input, &config, vec![StreamMode::Custom, StreamMode::Updates]);
-        
-        print!("Assistant: ");
-        let collected_text = stream_and_print(&mut stream, false).await;
-        println!("\n");
+        let collected_text = tracing.run_with_tracing(
+            "interactive_chat_turn",
+            input.clone(),
+            config,
+            |config| {
+                let app = &app;
+                async move {
+                    let mut stream = app.astream(&input, &config, vec![StreamMode::Custom, StreamMode::Updates]);
+                    print!("Assistant: ");
+                    let text = stream_and_print(&mut stream, false).await;
+                    println!("\n");
+                    json!({"messages": [{"type": "ai", "content": text}]})
+                }
+            },
+        ).await;
 
-        // 4. End the trace
-        let output = json!({
-            "messages": [{"type": "ai", "content": collected_text}]
-        });
-        observer.on_graph_end(&trace_id, output, TraceStatus::Success);
+        let _ = collected_text;
     }
 
     Ok(())

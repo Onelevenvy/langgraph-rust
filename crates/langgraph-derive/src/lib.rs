@@ -364,3 +364,54 @@ fn rust_type_to_json_type(ty: &syn::Type) -> &'static str {
         "string"
     }
 }
+
+// ============================================================================
+// #[derive(Traceable)] - auto-generate tracing context
+// ============================================================================
+
+/// Derive macro that generates a `tracing_context()` method on the struct.
+///
+/// When combined with `#[derive(StateGraph)]`, this adds one-liner tracing setup.
+/// Comment out the derive to disable tracing entirely.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(Debug, Clone, Serialize, Deserialize, Default, StateGraph, Traceable)]
+/// struct GraphState {
+///     #[channel(messages)]
+///     messages: Vec<Message>,
+/// }
+///
+/// // Usage:
+/// let mut tracing = GraphState::tracing_context();
+/// tracing.start_server("127.0.0.1:3333");
+/// let output = tracing.run_with_tracing("my_graph", input, |config| {
+///     // use config with app.astream() or app.invoke()
+/// }).await;
+/// ```
+#[proc_macro_derive(Traceable)]
+pub fn derive_traceable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    impl_traceable(&input)
+}
+
+fn impl_traceable(input: &DeriveInput) -> TokenStream {
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics #name #ty_generics #where_clause {
+            /// Create a tracing context for this graph.
+            ///
+            /// Returns a `TracingContext` that bundles store, event bus,
+            /// and observer. Use `start_server()` to launch the UI,
+            /// and `run_with_tracing()` to execute the graph with tracing.
+            pub fn tracing_context() -> langgraph_tracing::TracingContext {
+                langgraph_tracing::TracingContext::new()
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
