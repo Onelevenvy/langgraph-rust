@@ -1,0 +1,20 @@
+[package]
+name = "langgraph-checkpoint-sqlite"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+langgraph-checkpoint = { path = "../langgraph-checkpoint" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "json"] }
+
+[dev-dependencies]
+tokio = { workspace = true }

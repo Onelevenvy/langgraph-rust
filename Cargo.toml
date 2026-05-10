@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/langgraph-checkpoint",
     "crates/langgraph-checkpoint-postgres",
+    "crates/langgraph-checkpoint-sqlite",
     "crates/langgraph",
     "crates/langgraph-derive",
     "crates/langgraph-prebuilt",
@@ -39,6 +40,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 langgraph = { path = "crates/langgraph" }
 langgraph-prebuilt = { path = "crates/langgraph-prebuilt" }
 langgraph-checkpoint = { path = "crates/langgraph-checkpoint" }
+langgraph-checkpoint-sqlite = { path = "crates/langgraph-checkpoint-sqlite" }
 langgraph-derive = { path = "crates/langgraph-derive" }
 langgraph-providers = { path = "crates/langgraph-providers" }
 langgraph-tracing = { path = "crates/langgraph-tracing" }
@@ -96,3 +98,7 @@ path = "examples/join_edge_test.rs"
 [[example]]
 name = "tracing_demos"
 path = "examples/tracing_demos.rs"
+
+[[example]]
+name = "sqlite_checkpoint"
+path = "examples/sqlite_checkpoint.rs"
