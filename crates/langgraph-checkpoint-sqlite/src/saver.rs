@@ -651,7 +651,7 @@ impl BaseCheckpointSaver for SqliteSaver {
             .await
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
-        for (idx, (channel, _task_id_in_tuple, value)) in writes.iter().enumerate() {
+        for (idx, (_task_id_in_tuple, channel, value)) in writes.iter().enumerate() {
             let idx_val: i64 = idx_map
                 .get(channel.as_str())
                 .copied()

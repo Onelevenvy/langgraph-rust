@@ -219,7 +219,7 @@ impl PostgresSaver {
         writes
             .iter()
             .enumerate()
-            .filter_map(|(idx, (channel, _task_id, value))| {
+            .filter_map(|(idx, (_task_id, channel, value))| {
                 let idx_val = idx_map
                     .get(channel.as_str())
                     .copied()
