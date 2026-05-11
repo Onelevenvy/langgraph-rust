@@ -20,3 +20,10 @@ futures = "0.3"
 thiserror = { workspace = true }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 reqwest-eventsource = "0.6"
+
+[features]
+default = ["openai"]
+openai = []
+anthropic = []
+bedrock = []
+vertex = []

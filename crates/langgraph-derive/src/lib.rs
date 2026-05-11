@@ -172,19 +172,23 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 struct ToolMacroArgs {
     name: Lit,
-    description: Lit,
+    description: Option<Lit>,
 }
 
 impl syn::parse::Parse for ToolMacroArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let name: Lit = input.parse()?;
-        input.parse::<syn::Token![,]>()?;
-        let description: Lit = input.parse()?;
+        let description = if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
         Ok(Self { name, description })
     }
 }
 
-fn impl_tool_macro(name_lit: &Lit, desc_lit: &Lit, func: &ItemFn) -> TokenStream {
+fn impl_tool_macro(name_lit: &Lit, desc_lit: &Option<Lit>, func: &ItemFn) -> TokenStream {
     let fn_name = &func.sig.ident;
     let fn_name_str = fn_name.to_string();
 
@@ -193,9 +197,32 @@ fn impl_tool_macro(name_lit: &Lit, desc_lit: &Lit, func: &ItemFn) -> TokenStream
         Lit::Str(s) => s.value(),
         _ => panic!("tool name must be a string literal"),
     };
-    let description = match desc_lit {
-        Lit::Str(s) => s.value(),
-        _ => panic!("description must be a string literal"),
+    
+    let description = if let Some(desc) = desc_lit {
+        match desc {
+            Lit::Str(s) => s.value(),
+            _ => panic!("description must be a string literal"),
+        }
+    } else {
+        // Extract from doc attributes
+        let mut extracted_desc = String::new();
+        for attr in &func.attrs {
+            if attr.path().is_ident("doc") {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(expr_lit) = &nv.value {
+                        if let syn::Lit::Str(lit_str) = &expr_lit.lit {
+                            let doc_str = lit_str.value();
+                            let trimmed = doc_str.trim();
+                            if !extracted_desc.is_empty() {
+                                extracted_desc.push_str(" ");
+                            }
+                            extracted_desc.push_str(trimmed);
+                        }
+                    }
+                }
+            }
+        }
+        extracted_desc
     };
 
     // Generate CamelCase struct name
@@ -255,10 +282,20 @@ fn impl_tool_macro(name_lit: &Lit, desc_lit: &Lit, func: &ItemFn) -> TokenStream
         _ => false,
     };
 
+    // Determine if the function is async
+    let is_async = func.sig.asyncness.is_some();
+
+    // Generate the invoke body based on return type and asyncness
+    let await_tokens = if is_async {
+        quote! { .await }
+    } else {
+        quote! {}
+    };
+
     let invoke_body = if is_result_return {
         quote! {
             #(#extractions)*
-            let result = #fn_name(#(#param_names),*);
+            let result = #fn_name(#(#param_names),*)#await_tokens;
             result
                 .map_err(|e| {
                     let tool_err: langgraph_prebuilt::ToolError = e.into();
@@ -271,10 +308,42 @@ fn impl_tool_macro(name_lit: &Lit, desc_lit: &Lit, func: &ItemFn) -> TokenStream
     } else {
         quote! {
             #(#extractions)*
-            let result = #fn_name(#(#param_names),*);
+            let result = #fn_name(#(#param_names),*)#await_tokens;
             serde_json::to_value(result).map_err(|e| langgraph_prebuilt::ToolError::Execution(
                 format!("failed to serialize result: {}", e)
             ))
+        }
+    };
+
+    let trait_methods = if is_async {
+        quote! {
+            fn invoke(
+                &self,
+                _args: &serde_json::Value,
+                _config: &langgraph_checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
+                Err(langgraph_prebuilt::ToolError::Execution(
+                    "This tool is asynchronous and must be invoked with ainvoke".to_string()
+                ))
+            }
+
+            async fn ainvoke(
+                &self,
+                args: &serde_json::Value,
+                _config: &langgraph_checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
+                #invoke_body
+            }
+        }
+    } else {
+        quote! {
+            fn invoke(
+                &self,
+                args: &serde_json::Value,
+                _config: &langgraph_checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
+                #invoke_body
+            }
         }
     };
 
@@ -322,13 +391,7 @@ fn impl_tool_macro(name_lit: &Lit, desc_lit: &Lit, func: &ItemFn) -> TokenStream
                 }))
             }
 
-            fn invoke(
-                &self,
-                args: &serde_json::Value,
-                _config: &langgraph_checkpoint::config::RunnableConfig,
-            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
-                #invoke_body
-            }
+            #trait_methods
         }
     };
 
