@@ -171,12 +171,15 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 struct ToolMacroArgs {
-    name: Lit,
+    name: Option<Lit>,
     description: Option<Lit>,
 }
 
 impl syn::parse::Parse for ToolMacroArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.is_empty() {
+            return Ok(Self { name: None, description: None });
+        }
         let name: Lit = input.parse()?;
         let description = if input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;
@@ -184,18 +187,19 @@ impl syn::parse::Parse for ToolMacroArgs {
         } else {
             None
         };
-        Ok(Self { name, description })
+        Ok(Self { name: Some(name), description })
     }
 }
 
-fn impl_tool_macro(name_lit: &Lit, desc_lit: &Option<Lit>, func: &ItemFn) -> TokenStream {
+fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn) -> TokenStream {
     let fn_name = &func.sig.ident;
     let fn_name_str = fn_name.to_string();
 
     // Get tool name and description as strings
-    let tool_name = match name_lit {
-        Lit::Str(s) => s.value(),
-        _ => panic!("tool name must be a string literal"),
+    let tool_name = if let Some(Lit::Str(s)) = name_lit {
+        s.value()
+    } else {
+        fn_name_str.clone()
     };
     
     let description = if let Some(desc) = desc_lit {
