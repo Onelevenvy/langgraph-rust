@@ -22,9 +22,10 @@ langgraph-rust brings the core LangGraph concepts into idiomatic Rust:
 - **StateGraph** -- Directed graphs where nodes are async functions that transform state, and edges define control flow
 - **Pregel Engine** -- Bulk Synchronous Parallel (BSP) execution: Plan -> Execute (parallel via tokio) -> Update
 - **Channels** -- Type-erased state containers with reducers, fan-in barriers, and pub-sub semantics
-- **Checkpointing** -- Full state persistence for pause/resume, human-in-the-loop, and time-travel debugging
-- **ReAct Agent** -- Prebuilt Reasoning + Acting agent pattern with tool execution
-- **OpenAI Provider** -- Integration with OpenAI-compatible APIs (GPT-4o, Ollama, vLLM, etc.)
+- **Checkpointing** -- Full state persistence for pause/resume, human-in-the-loop, and time-travel debugging. Supports **InMemory**, **Postgres**, and **SQLite**.
+- **Tracing & Observability** -- Real-time tracing server and UI for visualizing graph execution and LLM calls.
+- **ReAct Agent** -- Prebuilt Reasoning + Acting agent pattern with tool execution.
+- **OpenAI Provider** -- Integration with OpenAI-compatible APIs (GPT-4o, Ollama, vLLM, DeepSeek, etc.).
 
 ## Project Structure
 
@@ -32,12 +33,15 @@ langgraph-rust brings the core LangGraph concepts into idiomatic Rust:
 langgraph-rust/
 ├── crates/
 │   ├── langgraph/                 # Core engine: StateGraph, Pregel BSP, Channels, Streaming
-│   ├── langgraph-derive/          # Proc macros: #[derive(StateGraph)], #[tool]
+│   ├── langgraph-derive/          # Proc macros: #[derive(StateGraph)], #[tool], #[derive(Traceable)]
 │   ├── langgraph-prebuilt/        # Prebuilt components: ReAct agent, ToolNode, Messages
-│   ├── langgraph-checkpoint/      # Checkpointing: InMemorySaver, BaseStore
+│   ├── langgraph-checkpoint/      # Checkpointer traits and InMemorySaver
 │   ├── langgraph-checkpoint-postgres/  # Postgres persistence via sqlx
-│   └── langgraph-providers/       # LLM integrations: OpenAI, OpenAI-compatible
-└── examples/                      # 8 runnable examples
+│   ├── langgraph-checkpoint-sqlite/    # SQLite persistence via sqlx
+│   ├── langgraph-tracing/         # Real-time tracing server and observability
+│   ├── langgraph-providers/       # LLM integrations: OpenAI, OpenAI-compatible
+│   └── langgraph-prebuilt/        # Prebuilt agents and nodes
+└── examples/                      # 16 runnable examples covering all features
 ```
 
 ## Quick Start
@@ -179,7 +183,8 @@ compiled_graph.update_state(
 | Checkpointer | Status | Notes |
 |--------------|--------|-------|
 | InMemorySaver | Done | HashMap-based, for testing and development |
-| PostgresSaver | Done | Production-ready via `sqlx`, with migrations and blob storage |
+| PostgresSaver | Done | Production-ready via `sqlx`, with migrations |
+| SqliteSaver | Done | Lightweight persistence via `sqlx` (SQLite) |
 
 ## Roadmap
 
@@ -193,7 +198,8 @@ compiled_graph.update_state(
 
 ### Checkpointers
 
-- [ ] SQLite Checkpointer
+- [x] SQLite Checkpointer
+- [ ] Redis Checkpointer
 
 
 ### Features
@@ -206,14 +212,22 @@ compiled_graph.update_state(
 
 | Example | Description |
 |---------|-------------|
-| `chat_simple` | Basic single/multi-turn chat with OpenAI |
 | `react_agent` | ReAct agent with `#[tool]` macro and `create_react_agent` |
-| `graph_with_tools` | Manual graph construction with tools and streaming |
-| `state_graph_derive` | `#[derive(StateGraph)]` usage |
+| `interactive_chat` | Interactive CLI chat with memory and history |
+| `interactive_chat_with_tracing` | Interactive chat with real-time tracing UI |
+| `sqlite_checkpoint` | Using SQLite for state persistence |
 | `human_in_the_loop` | `interrupt()` for human approval with `Command::resume` |
+| `human_in_the_loop_sqlite_checkpoint` | HITL with SQLite storage |
 | `streaming` | Token-by-token streaming with `StreamWriter` |
 | `time_travel` | `get_state_history` and fork from checkpoint |
 | `manus_like` | Plan-and-act multi-node agent (planner/executor/replanner) |
+| `graph_with_tools` | Manual graph construction with tools and streaming |
+| `state_graph_derive` | `#[derive(StateGraph)]` usage |
+| `custom_state_hitl` | HITL with custom state and complex control flow |
+| `parallel_interrupt_hitl` | Parallel execution with interrupts and HITL |
+| `tracing_demos` | Demonstration of tracing capabilities |
+| `langgraph_provider_openai` | Direct usage of the OpenAI provider |
+| `join_edge_test` | Testing graph join edges and complex routing |
 
 Run an example:
 
@@ -224,8 +238,10 @@ export OPENAI_API_KEY=sk-xxx
 # export OPENAI_API_BASE=http://localhost:11434/v1
 
 cargo run --example react_agent
-cargo run --example chat_simple
+cargo run --example interactive_chat
+cargo run --example interactive_chat_with_tracing
 cargo run --example human_in_the_loop
+cargo run --example sqlite_checkpoint
 ```
 
 ## Crate Overview
@@ -233,11 +249,13 @@ cargo run --example human_in_the_loop
 | Crate | Description |
 |-------|-------------|
 | `langgraph` | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
-| `langgraph-derive` | `#[derive(StateGraph)]` and `#[tool]` proc macros |
+| `langgraph-derive` | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
 | `langgraph-prebuilt` | ReAct agent, ToolNode, Message types, BaseChatModel trait |
 | `langgraph-checkpoint` | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
 | `langgraph-checkpoint-postgres` | `PostgresSaver` via sqlx with migrations |
-| `langgraph-providers` | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure) |
+| `langgraph-checkpoint-sqlite` | `SqliteSaver` via sqlx for SQLite |
+| `langgraph-tracing` | Real-time tracing server, event bus, and observers |
+| `langgraph-providers` | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure, DeepSeek) |
 
 ## Requirements
 
