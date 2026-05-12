@@ -246,27 +246,42 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     // Generate JSON schema properties
     let properties: Vec<proc_macro2::TokenStream> = params.iter().map(|(name, ty)| {
         let name_str = name.to_string();
-        let json_type = rust_type_to_json_type(ty);
+        let actual_ty = if is_option(ty) { extract_type_from_option(ty) } else { ty };
+        let json_type = rust_type_to_json_type(actual_ty);
         quote! {
             (#name_str, serde_json::json!({"type": #json_type}))
         }
     }).collect();
 
-    let required: Vec<String> = params.iter().map(|(name, _)| name.to_string()).collect();
+    let required: Vec<String> = params.iter()
+        .filter(|(_, ty)| !is_option(ty))
+        .map(|(name, _)| name.to_string())
+        .collect();
 
     // Generate parameter extraction code
     let extractions: Vec<proc_macro2::TokenStream> = params.iter().map(|(name, ty)| {
         let name_str = name.to_string();
-        let err_missing = format!("missing required parameter '{}'", name_str);
         let err_invalid = format!("invalid parameter '{}': {{}}", name_str);
-        quote! {
-            let #name: #ty = serde_json::from_value(
-                args.get(#name_str)
-                    .cloned()
-                    .ok_or_else(|| langgraph_prebuilt::ToolError::InvalidArgs(#err_missing.to_string()))?
-            ).map_err(|e| langgraph_prebuilt::ToolError::InvalidArgs(
-                format!(#err_invalid, e)
-            ))?;
+        
+        if is_option(ty) {
+            quote! {
+                let #name: #ty = match args.get(#name_str) {
+                    Some(v) => serde_json::from_value(v.clone())
+                        .map_err(|e| langgraph_prebuilt::ToolError::InvalidArgs(format!(#err_invalid, e)))?,
+                    None => None,
+                };
+            }
+        } else {
+            let err_missing = format!("missing required parameter '{}'", name_str);
+            quote! {
+                let #name: #ty = serde_json::from_value(
+                    args.get(#name_str)
+                        .cloned()
+                        .ok_or_else(|| langgraph_prebuilt::ToolError::InvalidArgs(#err_missing.to_string()))?
+                ).map_err(|e| langgraph_prebuilt::ToolError::InvalidArgs(
+                    format!(#err_invalid, e)
+                ))?;
+            }
         }
     }).collect();
 
@@ -481,4 +496,28 @@ fn impl_traceable(input: &DeriveInput) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+fn is_option(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Option";
+        }
+    }
+    false
+}
+
+fn extract_type_from_option(ty: &syn::Type) -> &syn::Type {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if segment.ident == "Option" {
+                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return inner_ty;
+                    }
+                }
+            }
+        }
+    }
+    ty
 }
