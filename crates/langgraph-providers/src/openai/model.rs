@@ -591,12 +591,9 @@ impl BaseChatModel for OpenAIModel {
                     })
                     .collect();
 
-                if !tool_calls.is_empty() {
-                    // Signal chunk: has_tool_calls()=true, text()="", thinking()=None.
-                    // stream_llm uses this to know tool calls are present without
-                    // re-printing any content.
-                    yield Ok(Self::build_message(String::new(), tool_calls, None, usage));
-                }
+                yield Ok(Self::build_message(String::new(), tool_calls, None, usage));
+            } else if usage.is_some() {
+                yield Ok(Self::build_message(String::new(), Vec::new(), None, usage));
             }
         })
     }
