@@ -1391,8 +1391,8 @@ impl CompiledStateGraph {
         };
         let is_fork = input.is_null() && saved_checkpoint_exists;
 
-        // Write input to channels on a fresh (non-resume, non-fork) invocation
-        if !is_resuming && !is_fork {
+        // Write input to channels on a fresh invocation OR when providing new input to a resumed thread
+        if !is_fork && (!is_resuming || !input.is_null()) {
             let input_writes = map_input(&[START.to_string()], input);
             for (chan, val) in &input_writes {
                 if let Some(ch) = channels.get(chan) {
@@ -1447,6 +1447,8 @@ impl CompiledStateGraph {
                 &pending_writes,
                 &channel_versions,
             );
+
+
 
             if tasks.is_empty() {
                 break;

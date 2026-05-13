@@ -84,13 +84,8 @@ pub fn prepare_next_tasks(
                 let chan_available = channels.get(chan).is_some_and(|c| c.is_available());
                 let chan_version = current_versions.get(chan).unwrap_or(&null_version);
                 let last_seen = seen.get(chan).unwrap_or(&null_version);
-                if is_resuming {
-                    // On resume, version comparison alone is sufficient.
-                    // Trigger channels may be empty (consumed) from the prior step.
-                    version_gt(chan_version, last_seen)
-                } else {
-                    chan_available && version_gt(chan_version, last_seen)
-                }
+                let gt = version_gt(chan_version, last_seen);
+                if is_resuming { gt } else { chan_available && gt }
             })
         } else {
             // Never run before
@@ -264,8 +259,10 @@ pub fn apply_writes(
     // 4. Apply writes to channels
     for (chan, vals) in &writes_by_channel {
         if let Some(ch) = channels.get(chan) {
-            if ch.update(vals).unwrap_or(false) {
-                // Channel value changed — bump version
+            let changed = ch.update(vals).unwrap_or(false);
+            // FORCE version bump for branch channels OR when value changed
+            if changed || chan.starts_with("branch:") || chan.starts_with("join:") {
+                // Channel value changed or it's a control channel — bump version
                 let new_ver = get_next_version(channel_versions.get(chan));
                 channel_versions.insert(chan.clone(), new_ver);
                 updated.insert(chan.clone());
