@@ -9,6 +9,7 @@ use langgraph_prebuilt::{
 };
 use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -127,10 +128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------
 
     let mut config = RunnableConfig::new();
+    let thread_id = Uuid::new_v4().to_string();
     config.insert(
         "configurable".to_string(),
         serde_json::json!({
-            "thread_id": "demo-thread-1"
+            "thread_id": thread_id
         }),
     );
 
