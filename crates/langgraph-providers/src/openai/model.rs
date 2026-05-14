@@ -19,6 +19,8 @@ struct RawMessage {
     tool_calls: Option<Vec<RawToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -275,10 +277,12 @@ impl OpenAIModel {
                     content: Some(content_text(content)),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: None,
                 }),
                 Message::Ai {
                     content,
                     tool_calls,
+                    thinking,
                     ..
                 } => {
                     let text = content_text(content);
@@ -306,10 +310,10 @@ impl OpenAIModel {
                     };
                     Some(RawMessage {
                         role: "assistant".to_string(),
-                        // content: if text.is_empty() { None } else { Some(text) },
-                        content: Some(text),
+                        content: if text.is_empty() { None } else { Some(text) },
                         tool_calls: tc,
                         tool_call_id: None,
+                        reasoning_content: thinking.clone(),
                     })
                 }
                 Message::System { content, .. } => Some(RawMessage {
@@ -317,6 +321,7 @@ impl OpenAIModel {
                     content: Some(content_text(content)),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: None,
                 }),
                 Message::Tool {
                     content,
@@ -327,6 +332,7 @@ impl OpenAIModel {
                     content: Some(content_text(content)),
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id.clone()),
+                    reasoning_content: None,
                 }),
                 Message::Remove { .. } => None,
             })
