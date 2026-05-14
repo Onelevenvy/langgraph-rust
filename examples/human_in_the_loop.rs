@@ -66,7 +66,7 @@ struct GraphState {
 // -------------------------------------------------------
 
 const SYSTEM_PROMPT: &str = "You are a helpful assistant with access to tools. \
-    Use the human_assistance tool when the user needs expert guidance. \
+    Use the human_assistance tool when the user needs expert guidance to confirm your response before sending it to the user. \
     Use the get_weather tool for weather queries. \
     After receiving tool results, provide a helpful response.";
 

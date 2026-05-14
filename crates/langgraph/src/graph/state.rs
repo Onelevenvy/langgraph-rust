@@ -1175,6 +1175,14 @@ fn apply_completed_writes(
         }
     }
 
+    // Compute a single global next_version from the max of all channel versions
+    let max_ver = channel_versions
+        .values()
+        .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        .max()
+        .unwrap_or(0);
+    let next_version = JsonValue::String(format!("{:032}", max_ver + 1));
+
     // Collect and apply writes from completed tasks to channels
     let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
     for task in tasks.iter().filter(|t| t.id != interrupted_task_id && !t.writes.is_empty()) {
@@ -1188,16 +1196,7 @@ fn apply_completed_writes(
     for (chan, vals) in &writes_by_channel {
         if let Some(ch) = channels.get(chan.as_str()) {
             if ch.update(vals).unwrap_or(false) {
-                let cur = channel_versions.get(chan);
-                let new_ver = cur
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0)
-                    + 1;
-                channel_versions.insert(
-                    chan.clone(),
-                    JsonValue::String(format!("{:032}", new_ver)),
-                );
+                channel_versions.insert(chan.clone(), next_version.clone());
             }
         }
     }

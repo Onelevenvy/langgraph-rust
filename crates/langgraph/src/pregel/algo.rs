@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use serde_json::Value as JsonValue;
 use crate::channels::Channel;
-use crate::constants::{TASKS, INTERRUPT, RESUME, NULL_TASK_ID, CONFIG_KEY_SCRATCHPAD};
+use crate::constants::{TASKS, INTERRUPT, RESUME, NULL_TASK_ID, CONFIG_KEY_SCRATCHPAD, RESERVED};
 use crate::types::PregelScratchpad;
 use super::{PregelNode, PregelExecutableTask, ChannelVersions, TriggerToNodes};
 
@@ -66,41 +66,27 @@ pub fn prepare_next_tasks(
         }
     });
 
-    // When resuming, trigger channels may have been consumed (empty) from the
-    // prior step. We still want nodes to re-trigger based on version comparison
-    // alone, since the resume value in the scratchpad will make interrupt()
-    // return instead of throwing.
-    let is_resuming = null_resume.is_some();
-
     for name in candidates {
         let node = match nodes.get(&name) {
             Some(n) => n,
             None => continue,
         };
 
-        // Check if any trigger channel has been updated
+        // Check if any trigger channel has been updated.
+        // Mirrors Python's _triggers(): always check both availability AND version,
+        // even during resume.
         let should_trigger = if let Some(seen) = versions_seen.get(&name) {
             node.triggers.iter().any(|chan| {
                 let chan_available = channels.get(chan).is_some_and(|c| c.is_available());
                 let chan_version = current_versions.get(chan).unwrap_or(&null_version);
                 let last_seen = seen.get(chan).unwrap_or(&null_version);
-                let gt = version_gt(chan_version, last_seen);
-                if is_resuming { gt } else { chan_available && gt }
+                chan_available && version_gt(chan_version, last_seen)
             })
         } else {
-            // Never run before
-            if is_resuming {
-                // On resume, trigger if any trigger channel has a version
-                // (the node was interrupted before its versions_seen was recorded)
-                node.triggers.iter().any(|chan| {
-                    current_versions.contains_key(chan)
-                })
-            } else {
-                // Fresh run — trigger if any trigger channel is available
-                node.triggers.iter().any(|chan| {
-                    channels.get(chan).is_some_and(|c| c.is_available())
-                })
-            }
+            // Never run before — trigger if any trigger channel is available
+            node.triggers.iter().any(|chan| {
+                channels.get(chan).is_some_and(|c| c.is_available())
+            })
         };
 
         if !should_trigger {
@@ -203,10 +189,12 @@ fn create_scratchpad(
 /// Apply writes from completed tasks to channels.
 ///
 /// This is the "Update" phase of the BSP cycle. It:
-/// 1. Groups writes by channel
-/// 2. Applies them to channels via `update()`
-/// 3. Bumps channel versions for changed channels
-/// 4. Consumes trigger channels (flushes ephemeral values)
+/// 1. Updates versions_seen for each task's trigger channels
+/// 2. Computes a single global next_version from the max of all channel versions
+/// 3. Consumes trigger channels (flushes ephemeral values) and bumps their versions
+/// 4. Groups writes by channel, applies them, and bumps versions
+/// 5. Notifies un-updated channels of the new superstep (bump_step)
+/// 6. Calls finish() on all channels if no trigger channels were updated
 ///
 /// Returns the set of updated channel names.
 pub fn apply_writes(
@@ -219,6 +207,10 @@ pub fn apply_writes(
 ) -> HashSet<String> {
     let mut updated = HashSet::new();
 
+    // if no task has triggers this is applying writes from the null task only
+    // so we don't do anything other than update the channels written to
+    let bump_step = tasks.iter().any(|t| !t.triggers.is_empty());
+
     // 1. Update versions_seen for each task's trigger channels
     for task in tasks {
         let seen = versions_seen.entry(task.name.clone()).or_default();
@@ -229,19 +221,34 @@ pub fn apply_writes(
         }
     }
 
-    // 2. Consume trigger channels (flush ephemeral/topic values)
+    // 2. Compute a single global next_version from the max of all channel versions.
+    //    This mirrors Python's behavior: all channels updated in the same superstep
+    //    share the same version "timestamp".
+    let max_version = channel_versions.values().max_by(|a, b| {
+        version_gt_partial(a, b)
+    }).cloned();
+    let next_version = get_next_version(max_version.as_ref());
+
+    // 3. Consume trigger channels (flush ephemeral/topic values).
+    //    Filter out RESERVED channels (matching Python behavior).
+    //    If consume() returns true (state changed), bump the channel version.
     let trigger_channels: HashSet<String> = tasks
         .iter()
         .flat_map(|t| t.triggers.iter().cloned())
         .collect();
 
     for chan in &trigger_channels {
-        if let Some(ch) = channels.get(chan) {
-            ch.consume();
+        if RESERVED.contains(&chan.as_str()) {
+            continue;
+        }
+        if let Some(ch) = channels.get(chan.as_str()) {
+            if ch.consume() {
+                channel_versions.insert(chan.clone(), next_version.clone());
+            }
         }
     }
 
-    // 3. Group writes by channel
+    // 4. Group writes by channel
     let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
     for task in tasks {
         for (chan, val) in &task.writes {
@@ -256,28 +263,64 @@ pub fn apply_writes(
         }
     }
 
-    // 4. Apply writes to channels
+    // 5. Apply writes to channels and bump versions
     for (chan, vals) in &writes_by_channel {
-        if let Some(ch) = channels.get(chan) {
-            let _ = ch.update(vals);
-            // ALWAYS bump version if there was an attempt to write to the channel.
-            // This ensures that downstream nodes are always notified of the activity.
-            let new_ver = get_next_version(channel_versions.get(chan));
-            channel_versions.insert(chan.clone(), new_ver);
-            updated.insert(chan.clone());
+        if let Some(ch) = channels.get(chan.as_str()) {
+            if ch.update(vals).unwrap_or(false) {
+                channel_versions.insert(chan.clone(), next_version.clone());
+                // unavailable channels can't trigger tasks, so don't add them
+                if ch.is_available() {
+                    updated.insert(chan.clone());
+                }
+            }
         }
     }
 
-    // 5. Check if we should finish (no more tasks can trigger)
-    let any_trigger_updated = updated.iter().any(|u| trigger_to_nodes.contains_key(u));
-    if !any_trigger_updated && !updated.is_empty() {
-        // No updated channel can trigger any node — call finish() on all channels
-        for ch in channels.values() {
-            ch.finish();
+    // 6. Channels that weren't updated in this step are notified of a new step.
+    //    This allows ephemeral channels to clear themselves and notify downstream.
+    if bump_step {
+        for (chan, ch) in channels.iter() {
+            if ch.is_available() && !updated.contains(chan) {
+                if ch.update(&[]).unwrap_or(false) {
+                    channel_versions.insert(chan.clone(), next_version.clone());
+                    if ch.is_available() {
+                        updated.insert(chan.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // 7. If this is (tentatively) the last superstep, notify all channels of finish.
+    //    If finish() returns true (state changed), bump the channel version.
+    if bump_step && !updated.iter().any(|u| trigger_to_nodes.contains_key(u)) {
+        for (chan, ch) in channels.iter() {
+            if ch.finish() {
+                channel_versions.insert(chan.clone(), next_version.clone());
+                if ch.is_available() {
+                    updated.insert(chan.clone());
+                }
+            }
         }
     }
 
     updated
+}
+
+/// Helper for comparing versions in max_by.
+/// Returns Ordering::Greater if a > b (string-wise).
+fn version_gt_partial(a: &JsonValue, b: &JsonValue) -> std::cmp::Ordering {
+    let a_str = match a {
+        JsonValue::String(s) => s.as_str(),
+        JsonValue::Number(n) => return n.to_string().cmp(&b.to_string()),
+        _ => return std::cmp::Ordering::Equal,
+    };
+    let b_str = match b {
+        JsonValue::String(s) => s.as_str(),
+        JsonValue::Number(n) => return a_str.cmp(&n.to_string()),
+        _ => return std::cmp::Ordering::Equal,
+    };
+    a_str.cmp(b_str)
 }
 
 /// Check if we should interrupt before executing the given nodes.

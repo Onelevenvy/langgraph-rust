@@ -61,3 +61,28 @@ pub const CONFIG_KEY_RESUME_MAP: &str = "__pregel_resume_map";
 
 /// Null task ID for writes not associated with a task
 pub const NULL_TASK_ID: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Set of reserved channel/write key names that should not be consumed
+/// as normal trigger channels. Mirrors Python's `RESERVED` set.
+pub const RESERVED: &[&str] = &[
+    TAG_HIDDEN,
+    INPUT,
+    INTERRUPT,
+    RESUME,
+    ERROR,
+    NO_WRITES,
+    CONFIG_KEY_SEND,
+    CONFIG_KEY_READ,
+    CONFIG_KEY_CHECKPOINTER,
+    CONFIG_KEY_STREAM,
+    CONFIG_KEY_CHECKPOINT_MAP,
+    CONFIG_KEY_RESUMING,
+    CONFIG_KEY_TASK_ID,
+    CONFIG_KEY_CHECKPOINT_ID,
+    CONFIG_KEY_CHECKPOINT_NS,
+    CONFIG_KEY_RESUME_MAP,
+    PUSH,
+    PULL,
+    NS_SEP,
+    NS_END,
+];
