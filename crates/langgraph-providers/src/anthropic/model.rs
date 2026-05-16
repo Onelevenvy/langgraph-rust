@@ -55,6 +55,11 @@ enum ContentBlock {
     Text {
         text: String,
     },
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -298,9 +303,16 @@ impl AnthropicModel {
                 Message::Ai {
                     content,
                     tool_calls,
+                    thinking,
                     ..
                 } => {
                     let mut blocks = Vec::new();
+                    if let Some(t) = thinking {
+                        blocks.push(ContentBlock::Thinking {
+                            thinking: t.clone(),
+                            signature: None,
+                        });
+                    }
                     let text = common::content_text(content);
                     if !text.is_empty() {
                         blocks.push(ContentBlock::Text { text });
@@ -612,9 +624,11 @@ impl BaseChatModel for AnthropicModel {
                     })
                     .collect();
 
-                yield Ok(common::build_ai_message(String::new(), tool_calls, None, usage));
+                let thinking = if accumulated_thinking.is_empty() { None } else { Some(accumulated_thinking) };
+                yield Ok(common::build_ai_message(String::new(), tool_calls, thinking, usage));
             } else if usage.is_some() {
-                yield Ok(common::build_ai_message(String::new(), Vec::new(), None, usage));
+                let thinking = if accumulated_thinking.is_empty() { None } else { Some(accumulated_thinking) };
+                yield Ok(common::build_ai_message(String::new(), Vec::new(), thinking, usage));
             }
         })
     }
