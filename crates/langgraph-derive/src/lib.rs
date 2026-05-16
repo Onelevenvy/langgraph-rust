@@ -249,7 +249,10 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     } else {
         fn_name_str.clone()
     };
-    
+
+    // Extract parameter descriptions from @param lines in doc comments.
+    let param_descs = extract_param_descs(func);
+
     let description = if let Some(desc) = desc_lit {
         match desc {
             Lit::Str(s) => s.value(),
@@ -264,6 +267,10 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
                         if let syn::Lit::Str(lit_str) = &expr_lit.lit {
                             let doc_str = lit_str.value();
                             let trimmed = doc_str.trim();
+                            // Skip @param lines — they are for schema, not description.
+                            if trimmed.starts_with("@param ") {
+                                continue;
+                            }
                             if !extracted_desc.is_empty() {
                                 extracted_desc.push_str(" ");
                             }
@@ -292,8 +299,14 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
         let name_str = name.to_string();
         let actual_ty = if is_option(ty) { extract_type_from_option(ty) } else { ty };
         let json_type = rust_type_to_json_type(actual_ty);
-        quote! {
-            (#name_str, serde_json::json!({"type": #json_type}))
+        if let Some(d) = param_descs.get(&name_str) {
+            quote! {
+                (#name_str, serde_json::json!({"type": #json_type, "description": #d}))
+            }
+        } else {
+            quote! {
+                (#name_str, serde_json::json!({"type": #json_type}))
+            }
         }
     }).collect();
 
@@ -518,4 +531,33 @@ fn extract_type_from_option(ty: &syn::Type) -> &syn::Type {
         }
     }
     ty
+}
+
+fn extract_param_descs(func: &ItemFn) -> std::collections::HashMap<String, String> {
+    let mut descs = std::collections::HashMap::new();
+    for attr in &func.attrs {
+        if !attr.path().is_ident("doc") {
+            continue;
+        }
+        if let syn::Meta::NameValue(nv) = &attr.meta {
+            if let syn::Expr::Lit(expr_lit) = &nv.value {
+                if let syn::Lit::Str(lit_str) = &expr_lit.lit {
+                    let line = lit_str.value();
+                    let trimmed = line.trim();
+                    // Parse "@param name description"
+                    if let Some(rest) = trimmed.strip_prefix("@param ") {
+                        let rest = rest.trim_start();
+                        if let Some(space_idx) = rest.find(char::is_whitespace) {
+                            let name = rest[..space_idx].to_string();
+                            let desc = rest[space_idx..].trim().to_string();
+                            if !desc.is_empty() {
+                                descs.insert(name, desc);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    descs
 }
