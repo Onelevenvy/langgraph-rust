@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use crate::types::StreamMode;
 
@@ -5,7 +6,7 @@ use crate::types::StreamMode;
 ///
 /// Discriminated on the `mode` field. The `ns` field carries the namespace
 /// path (empty for top-level graphs). The `data` field carries the payload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamPart {
     /// The stream mode that produced this chunk.
     pub mode: StreamMode,
