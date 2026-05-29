@@ -73,6 +73,8 @@ struct RawRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<StreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -193,6 +195,8 @@ pub struct OpenAIModelConfig {
     pub frequency_penalty: Option<f32>,
     /// Presence penalty.
     pub presence_penalty: Option<f32>,
+    /// Response format (e.g., {"type": "json_object"} or {"type": "json_schema", ...}).
+    pub response_format: Option<serde_json::Value>,
 }
 
 impl Default for OpenAIModelConfig {
@@ -206,6 +210,7 @@ impl Default for OpenAIModelConfig {
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
+            response_format: None,
         }
     }
 }
@@ -400,6 +405,7 @@ impl BaseChatModel for OpenAIModel {
             tools: self.build_tools(),
             stream: false,
             stream_options: None,
+            response_format: self.config.response_format.clone(),
         };
 
         let response = self
@@ -475,6 +481,7 @@ impl BaseChatModel for OpenAIModel {
                 tools: self.build_tools(),
                 stream: true,
                 stream_options: Some(StreamOptions { include_usage: true }),
+                response_format: self.config.response_format.clone(),
             };
 
             let es_builder = self
