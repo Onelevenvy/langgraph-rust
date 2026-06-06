@@ -2,10 +2,13 @@
 
 A Rust implementation of [LangGraph](https://github.com/langchain-ai/langgraph) -- a framework for building stateful, multi-actor applications with LLMs.
 
+## Projects Built with langgraph-rust
+> [!TIP]
+> **Featured Project**: Check out [flock](https://github.com/Onelevenvy/flock) [![GitHub stars](https://img.shields.io/github/stars/Onelevenvy/flock?style=social)](https://github.com/Onelevenvy/flock) — a premium multi-agent framework built on top of langgraph-rust!
+
 ## Table of Contents
 
 - [Overview](#overview)
-- [Projects Built with langgraph-rust](#projects-built-with-langgraph-rust)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
 - [Supported Providers](#supported-providers)
@@ -27,10 +30,6 @@ langgraph-rust brings the core LangGraph concepts into idiomatic Rust:
 - **Tracing & Observability** -- Real-time tracing server and UI for visualizing graph execution and LLM calls.
 - **ReAct Agent** -- Prebuilt Reasoning + Acting agent pattern with tool execution.
 - **OpenAI Provider** -- Integration with OpenAI-compatible APIs (GPT-4o, Ollama, vLLM, DeepSeek, etc.).
-## Projects Built with langgraph-rust
-
-- [flock](https://github.com/Onelevenvy/flock) [![GitHub stars](https://img.shields.io/github/stars/Onelevenvy/flock?style=social)](https://github.com/Onelevenvy/flock) - A multi-agent framework built on top of langgraph-rust.
-
 ## Project Structure
 
 ```
@@ -52,15 +51,25 @@ langgraph-rust/
 
 ### Installation
 
-Add `langgraph` to your `Cargo.toml`:
+Add `langgraph` to your project:
+
+```bash
+# Add basic core package (no optional features by default)
+cargo add langgraph
+
+# Or enable optional features (e.g. prebuilt agents, model providers, sqlite checkpointer)
+cargo add langgraph --features prebuilt,providers,sqlite,postgres
+```
+
+Or configure it in your `Cargo.toml` manually:
 
 ```toml
 [dependencies]
 # Basic core package
 langgraph = "0.2.0"
 
-# Or enable optional features out-of-the-box:
-# langgraph = { version = "0.2.0", features = ["prebuilt", "providers", "sqlite"] }
+# Or enable optional features:
+# langgraph = { version = "0.2.0", features = ["prebuilt", "providers", "postgres", "sqlite"] }
 ```
 
 ### Cargo Features
