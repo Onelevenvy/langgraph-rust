@@ -2,6 +2,9 @@
 name = "langgraph-derive"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Derive macros for LangGraph applications in Rust"
 
 [lib]
 proc-macro = true

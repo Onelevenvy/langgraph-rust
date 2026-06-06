@@ -2,10 +2,13 @@
 
 A Rust implementation of [LangGraph](https://github.com/langchain-ai/langgraph) -- a framework for building stateful, multi-actor applications with LLMs.
 
+## Projects Built with langgraph-rust
+> [!TIP]
+> **Featured Project**: Check out [flock](https://github.com/Onelevenvy/flock) [![GitHub stars](https://img.shields.io/github/stars/Onelevenvy/flock?style=social)](https://github.com/Onelevenvy/flock) — a premium multi-agent framework built on top of langgraph-rust!
+
 ## Table of Contents
 
 - [Overview](#overview)
-- [Projects Built with langgraph-rust](#projects-built-with-langgraph-rust)
 - [Project Structure](#project-structure)
 - [Quick Start](#quick-start)
 - [Supported Providers](#supported-providers)
@@ -27,10 +30,6 @@ langgraph-rust brings the core LangGraph concepts into idiomatic Rust:
 - **Tracing & Observability** -- Real-time tracing server and UI for visualizing graph execution and LLM calls.
 - **ReAct Agent** -- Prebuilt Reasoning + Acting agent pattern with tool execution.
 - **OpenAI Provider** -- Integration with OpenAI-compatible APIs (GPT-4o, Ollama, vLLM, DeepSeek, etc.).
-## Projects Built with langgraph-rust
-
-- [flock](https://github.com/Onelevenvy/flock) [![GitHub stars](https://img.shields.io/github/stars/Onelevenvy/flock?style=social)](https://github.com/Onelevenvy/flock) - A multi-agent framework built on top of langgraph-rust.
-
 ## Project Structure
 
 ```
@@ -49,6 +48,47 @@ langgraph-rust/
 ```
 
 ## Quick Start
+
+### Installation
+
+Add `langgraph` to your project:
+
+```bash
+# Add basic core package (no optional features by default)
+cargo add langgraph
+
+# Or enable specific features (e.g. prebuilt agents, model providers, sqlite checkpointer)
+cargo add langgraph --features prebuilt,providers,sqlite,postgres
+
+# Or enable all features at once
+cargo add langgraph --features full
+```
+
+Or configure it in your `Cargo.toml` manually:
+
+```toml
+[dependencies]
+# Basic core package
+langgraph = "0.2.1"
+
+# Or enable specific features:
+# langgraph = { version = "0.2.1", features = ["prebuilt", "providers", "sqlite", "postgres"] }
+
+# Or enable all features at once:
+# langgraph = { version = "0.2.1", features = ["full"] }
+```
+
+### Cargo Features
+
+The `langgraph` umbrella crate organizes the ecosystem into separate cargo features:
+
+- `full`: Enables all optional features below (`prebuilt`, `providers`, `tracing`, `sqlite`, `postgres`).
+- `prebuilt`: ReAct agent, `ToolNode`, message types, and base chat model trait.
+- `providers`: Model providers integration (OpenAI, compatibility clients).
+- `tracing`: Tracing server, observer, and telemetry.
+- `sqlite`: SQLite checkpointer persistence.
+- `postgres`: PostgreSQL checkpointer persistence.
+
 
 ### Configure Environment
 
@@ -256,16 +296,17 @@ cargo run --example sqlite_checkpoint
 
 ## Crate Overview
 
-| Crate | Description |
-|-------|-------------|
-| `langgraph` | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
-| `langgraph-derive` | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
-| `langgraph-prebuilt` | ReAct agent, ToolNode, Message types, BaseChatModel trait |
-| `langgraph-checkpoint` | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
-| `langgraph-checkpoint-postgres` | `PostgresSaver` via sqlx with migrations |
-| `langgraph-checkpoint-sqlite` | `SqliteSaver` via sqlx for SQLite |
-| `langgraph-tracing` | Real-time tracing server, event bus, and observers |
-| `langgraph-providers` | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure, DeepSeek) |
+| Crate | crates.io Crate Name | Description |
+|-------|----------------------|-------------|
+| `langgraph` | [**`langgraph`**](https://crates.io/crates/langgraph) | **Main Umbrella Crate** (Run `cargo add langgraph` to install the full suite) |
+| `langgraph-core` | [**`langgraph-core-rs`**](https://crates.io/crates/langgraph-core-rs) | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
+| `langgraph-derive` | [**`langgraph-derive`**](https://crates.io/crates/langgraph-derive) | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
+| `langgraph-prebuilt` | [**`langgraph-prebuilt`**](https://crates.io/crates/langgraph-prebuilt) | ReAct agent, ToolNode, Message types, BaseChatModel trait |
+| `langgraph-checkpoint` | [**`langgraph-checkpoint-rs`**](https://crates.io/crates/langgraph-checkpoint-rs) | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
+| `langgraph-checkpoint-postgres` | [**`langgraph-checkpoint-postgres-rs`**](https://crates.io/crates/langgraph-checkpoint-postgres-rs) | `PostgresSaver` via sqlx with migrations |
+| `langgraph-checkpoint-sqlite` | [**`langgraph-checkpoint-sqlite-rs`**](https://crates.io/crates/langgraph-checkpoint-sqlite-rs) | `SqliteSaver` via sqlx for SQLite |
+| `langgraph-tracing` | [**`langgraph-tracing`**](https://crates.io/crates/langgraph-tracing) | Real-time tracing server, event bus, and observers |
+| `langgraph-providers` | [**`langgraph-providers`**](https://crates.io/crates/langgraph-providers) | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure, DeepSeek) |
 
 ## Requirements
 

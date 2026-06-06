@@ -1,13 +1,16 @@
 [package]
-name = "langgraph"
+name = "langgraph-core-rs"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core engine for LangGraph in Rust (StateGraph, Pregel, Channels, Streaming)"
 
 [lints]
 workspace = true
 
 [dependencies]
-langgraph-checkpoint = { path = "../langgraph-checkpoint" }
+langgraph_checkpoint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
