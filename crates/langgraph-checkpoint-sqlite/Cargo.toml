@@ -1,5 +1,5 @@
 [package]
-name = "langgraph-checkpoint-sqlite"
+name = "langgraph-checkpoint-sqlite-rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ description = "SQLite checkpointer implementation for LangGraph applications in 
 workspace = true
 
 [dependencies]
-langgraph-checkpoint = { workspace = true }
+langgraph_checkpoint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

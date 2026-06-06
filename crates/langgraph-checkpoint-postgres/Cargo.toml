@@ -1,5 +1,5 @@
 [package]
-name = "langgraph-checkpoint-postgres"
+name = "langgraph-checkpoint-postgres-rs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ description = "PostgreSQL checkpointer implementation for LangGraph applications
 workspace = true
 
 [dependencies]
-langgraph-checkpoint = { workspace = true }
+langgraph_checkpoint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

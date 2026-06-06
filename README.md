@@ -256,16 +256,16 @@ cargo run --example sqlite_checkpoint
 
 ## Crate Overview
 
-| Crate | Description |
-|-------|-------------|
-| `langgraph` | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
-| `langgraph-derive` | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
-| `langgraph-prebuilt` | ReAct agent, ToolNode, Message types, BaseChatModel trait |
-| `langgraph-checkpoint` | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
-| `langgraph-checkpoint-postgres` | `PostgresSaver` via sqlx with migrations |
-| `langgraph-checkpoint-sqlite` | `SqliteSaver` via sqlx for SQLite |
-| `langgraph-tracing` | Real-time tracing server, event bus, and observers |
-| `langgraph-providers` | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure, DeepSeek) |
+| Crate | crates.io Crate Name | Description |
+|-------|----------------------|-------------|
+| `langgraph` | [**`langgraph`**](https://crates.io/crates/langgraph) | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
+| `langgraph-derive` | [**`langgraph-derive`**](https://crates.io/crates/langgraph-derive) | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
+| `langgraph-prebuilt` | [**`langgraph-prebuilt`**](https://crates.io/crates/langgraph-prebuilt) | ReAct agent, ToolNode, Message types, BaseChatModel trait |
+| `langgraph-checkpoint` | [**`langgraph-checkpoint-rs`**](https://crates.io/crates/langgraph-checkpoint-rs) | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
+| `langgraph-checkpoint-postgres` | [**`langgraph-checkpoint-postgres-rs`**](https://crates.io/crates/langgraph-checkpoint-postgres-rs) | `PostgresSaver` via sqlx with migrations |
+| `langgraph-checkpoint-sqlite` | [**`langgraph-checkpoint-sqlite-rs`**](https://crates.io/crates/langgraph-checkpoint-sqlite-rs) | `SqliteSaver` via sqlx for SQLite |
+| `langgraph-tracing` | [**`langgraph-tracing`**](https://crates.io/crates/langgraph-tracing) | Real-time tracing server, event bus, and observers |
+| `langgraph-providers` | [**`langgraph-providers`**](https://crates.io/crates/langgraph-providers) | `OpenAIModel`, `OpenAICompatModel` (Ollama, vLLM, Azure, DeepSeek) |
 
 ## Requirements
 

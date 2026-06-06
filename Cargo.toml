@@ -4,7 +4,7 @@ members = [
     "crates/langgraph-checkpoint",
     "crates/langgraph-checkpoint-postgres",
     "crates/langgraph-checkpoint-sqlite",
-    "crates/langgraph",
+    "crates/langgraph-core",
     "crates/langgraph-derive",
     "crates/langgraph-prebuilt",
     "crates/langgraph-providers",
@@ -16,7 +16,7 @@ unused = "allow"
 unused_imports = "allow"
 
 [package]
-name = "langgraph-rust"
+name = "langgraph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -24,7 +24,7 @@ repository.workspace = true
 description = "A Rust implementation of LangGraph for building stateful, multi-actor applications with LLMs (Full suite)"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -42,23 +42,25 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "v7"] }
 sqlx = { version = "0.8", default-features = false }
 
-langgraph = { path = "crates/langgraph", version = "0.1.0" }
-langgraph-prebuilt = { path = "crates/langgraph-prebuilt", version = "0.1.0" }
-langgraph-checkpoint = { path = "crates/langgraph-checkpoint", version = "0.1.0" }
-langgraph-checkpoint-sqlite = { path = "crates/langgraph-checkpoint-sqlite", version = "0.1.0" }
-langgraph-checkpoint-postgres = { path = "crates/langgraph-checkpoint-postgres", version = "0.1.0" }
-langgraph-derive = { path = "crates/langgraph-derive", version = "0.1.0" }
-langgraph-providers = { path = "crates/langgraph-providers", version = "0.1.0" }
-langgraph-tracing = { path = "crates/langgraph-tracing", version = "0.1.0" }
+langgraph-core-rs = { path = "crates/langgraph-core", version = "0.2.0" }
+langgraph = { package = "langgraph-core-rs", path = "crates/langgraph-core", version = "0.2.0" }
+langgraph-prebuilt = { path = "crates/langgraph-prebuilt", version = "0.2.0" }
+langgraph_checkpoint = { package = "langgraph-checkpoint-rs", path = "crates/langgraph-checkpoint", version = "0.2.0" }
+langgraph_checkpoint_sqlite = { package = "langgraph-checkpoint-sqlite-rs", path = "crates/langgraph-checkpoint-sqlite", version = "0.2.0" }
+langgraph_checkpoint_postgres = { package = "langgraph-checkpoint-postgres-rs", path = "crates/langgraph-checkpoint-postgres", version = "0.2.0" }
+langgraph-derive = { path = "crates/langgraph-derive", version = "0.2.0" }
+langgraph-providers = { path = "crates/langgraph-providers", version = "0.2.0" }
+langgraph-tracing = { path = "crates/langgraph-tracing", version = "0.2.0" }
 
 [dependencies]
-langgraph = { workspace = true }
-langgraph-prebuilt = { workspace = true }
-langgraph-checkpoint = { workspace = true }
-langgraph-checkpoint-sqlite = { workspace = true }
+langgraph-core-rs = { workspace = true }
+langgraph_checkpoint = { workspace = true }
 langgraph-derive = { workspace = true }
-langgraph-providers = { workspace = true }
-langgraph-tracing = { workspace = true }
+langgraph-prebuilt = { workspace = true, optional = true }
+langgraph_checkpoint_sqlite = { workspace = true, optional = true }
+langgraph_checkpoint_postgres = { workspace = true, optional = true }
+langgraph-providers = { workspace = true, optional = true }
+langgraph-tracing = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -66,3 +68,11 @@ tokio-stream = { workspace = true }
 async-trait = { workspace = true }
 dotenvy = "0.15.7"
 uuid = { workspace = true }
+
+[features]
+default = []
+prebuilt = ["dep:langgraph-prebuilt"]
+providers = ["dep:langgraph-providers"]
+tracing = ["dep:langgraph-tracing"]
+sqlite = ["dep:langgraph_checkpoint_sqlite"]
+postgres = ["dep:langgraph_checkpoint_postgres"]
