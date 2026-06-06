@@ -1044,6 +1044,7 @@ version = "0.2.1"
 dependencies = [
  "async-trait",
  "dotenvy",
+ "langgraph",
  "langgraph-checkpoint-postgres-rs",
  "langgraph-checkpoint-rs",
  "langgraph-checkpoint-sqlite-rs",

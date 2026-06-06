@@ -37,7 +37,7 @@ pub fn langgraph_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
     
     // 1. Add the "big bunch" of derives
     input.attrs.push(syn::parse_quote! {
-        #[derive(serde::Serialize, serde::Deserialize, Clone, Default, langgraph_derive::StateGraph)]
+        #[derive(serde::Serialize, serde::Deserialize, Clone, Default, langgraph::StateGraph)]
     });
 
     // 2. Walk fields and ensure #[serde(default)] exists
@@ -139,7 +139,7 @@ fn impl_state_graph(input: &DeriveInput) -> TokenStream {
                             #field_name_str.to_string(),
                             Box::new(langgraph::channels::BinaryOperatorAggregate::new(
                                 #field_name_str,
-                                langgraph_prebuilt::add_messages_ref,
+                                langgraph::prebuilt::add_messages_ref,
                             )) as Box<dyn langgraph::channels::Channel>
                         );
                     }
@@ -323,7 +323,7 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             quote! {
                 let #name: #ty = match args.get(#name_str) {
                     Some(v) => serde_json::from_value(v.clone())
-                        .map_err(|e| langgraph_prebuilt::ToolError::InvalidArgs(format!(#err_invalid, e)))?,
+                        .map_err(|e| langgraph::prebuilt::ToolError::InvalidArgs(format!(#err_invalid, e)))?,
                     None => None,
                 };
             }
@@ -333,8 +333,8 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
                 let #name: #ty = serde_json::from_value(
                     args.get(#name_str)
                         .cloned()
-                        .ok_or_else(|| langgraph_prebuilt::ToolError::InvalidArgs(#err_missing.to_string()))?
-                ).map_err(|e| langgraph_prebuilt::ToolError::InvalidArgs(
+                        .ok_or_else(|| langgraph::prebuilt::ToolError::InvalidArgs(#err_missing.to_string()))?
+                ).map_err(|e| langgraph::prebuilt::ToolError::InvalidArgs(
                     format!(#err_invalid, e)
                 ))?;
             }
@@ -370,10 +370,10 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             let result = #fn_name(#(#param_names),*)#await_tokens;
             result
                 .map_err(|e| {
-                    let tool_err: langgraph_prebuilt::ToolError = e.into();
+                    let tool_err: langgraph::prebuilt::ToolError = e.into();
                     tool_err
                 })
-                .and_then(|r| serde_json::to_value(r).map_err(|e| langgraph_prebuilt::ToolError::Execution(
+                .and_then(|r| serde_json::to_value(r).map_err(|e| langgraph::prebuilt::ToolError::Execution(
                     format!("failed to serialize result: {}", e)
                 )))
         }
@@ -381,7 +381,7 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
         quote! {
             #(#extractions)*
             let result = #fn_name(#(#param_names),*)#await_tokens;
-            serde_json::to_value(result).map_err(|e| langgraph_prebuilt::ToolError::Execution(
+            serde_json::to_value(result).map_err(|e| langgraph::prebuilt::ToolError::Execution(
                 format!("failed to serialize result: {}", e)
             ))
         }
@@ -392,9 +392,9 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             fn invoke(
                 &self,
                 _args: &serde_json::Value,
-                _config: &langgraph_checkpoint::config::RunnableConfig,
-            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
-                Err(langgraph_prebuilt::ToolError::Execution(
+                _config: &langgraph::checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph::prebuilt::ToolError> {
+                Err(langgraph::prebuilt::ToolError::Execution(
                     "This tool is asynchronous and must be invoked with ainvoke".to_string()
                 ))
             }
@@ -402,8 +402,8 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             async fn ainvoke(
                 &self,
                 args: &serde_json::Value,
-                _config: &langgraph_checkpoint::config::RunnableConfig,
-            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
+                _config: &langgraph::checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph::prebuilt::ToolError> {
                 #invoke_body
             }
         }
@@ -412,8 +412,8 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             fn invoke(
                 &self,
                 args: &serde_json::Value,
-                _config: &langgraph_checkpoint::config::RunnableConfig,
-            ) -> Result<serde_json::Value, langgraph_prebuilt::ToolError> {
+                _config: &langgraph::checkpoint::config::RunnableConfig,
+            ) -> Result<serde_json::Value, langgraph::prebuilt::ToolError> {
                 #invoke_body
             }
         }
@@ -429,7 +429,7 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
             fn default() -> Self { Self }
         }
         #[async_trait::async_trait]
-        impl langgraph_prebuilt::BaseTool for #struct_name {
+        impl langgraph::prebuilt::BaseTool for #struct_name {
             fn name(&self) -> &str { #tool_name }
             fn description(&self) -> &str { #description }
             fn parameters(&self) -> Option<&serde_json::Value> {

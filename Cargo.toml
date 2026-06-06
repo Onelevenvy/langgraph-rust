@@ -70,6 +70,7 @@ dotenvy = "0.15.7"
 uuid = { workspace = true }
 
 [dev-dependencies]
+langgraph = { path = ".", features = ["full"] }
 langgraph-prebuilt = { workspace = true }
 langgraph-providers = { workspace = true }
 langgraph_checkpoint_sqlite = { workspace = true }
