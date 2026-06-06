@@ -57,8 +57,11 @@ Add `langgraph` to your project:
 # Add basic core package (no optional features by default)
 cargo add langgraph
 
-# Or enable optional features (e.g. prebuilt agents, model providers, sqlite checkpointer)
+# Or enable specific features (e.g. prebuilt agents, model providers, sqlite checkpointer)
 cargo add langgraph --features prebuilt,providers,sqlite,postgres
+
+# Or enable all features at once
+cargo add langgraph --features full
 ```
 
 Or configure it in your `Cargo.toml` manually:
@@ -66,21 +69,26 @@ Or configure it in your `Cargo.toml` manually:
 ```toml
 [dependencies]
 # Basic core package
-langgraph = "0.2.0"
+langgraph = "0.2.1"
 
-# Or enable optional features:
-# langgraph = { version = "0.2.0", features = ["prebuilt", "providers", "postgres", "sqlite"] }
+# Or enable specific features:
+# langgraph = { version = "0.2.1", features = ["prebuilt", "providers", "sqlite", "postgres"] }
+
+# Or enable all features at once:
+# langgraph = { version = "0.2.1", features = ["full"] }
 ```
 
 ### Cargo Features
 
 The `langgraph` umbrella crate organizes the ecosystem into separate cargo features:
 
+- `full`: Enables all optional features below (`prebuilt`, `providers`, `tracing`, `sqlite`, `postgres`).
 - `prebuilt`: ReAct agent, `ToolNode`, message types, and base chat model trait.
 - `providers`: Model providers integration (OpenAI, compatibility clients).
 - `tracing`: Tracing server, observer, and telemetry.
 - `sqlite`: SQLite checkpointer persistence.
 - `postgres`: PostgreSQL checkpointer persistence.
+
 
 ### Configure Environment
 

@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "dotenvy",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-checkpoint-postgres-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "langgraph-checkpoint-rs",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-checkpoint-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1092,7 +1092,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-checkpoint-sqlite-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "langgraph-checkpoint-rs",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-core-rs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-derive"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-prebuilt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-providers"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1167,7 +1167,7 @@ dependencies = [
 
 [[package]]
 name = "langgraph-tracing"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-stream",
  "async-trait",
