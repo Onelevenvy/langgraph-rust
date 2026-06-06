@@ -50,6 +50,29 @@ langgraph-rust/
 
 ## Quick Start
 
+### Installation
+
+Add `langgraph` to your `Cargo.toml`:
+
+```toml
+[dependencies]
+# Basic core package
+langgraph = "0.2.0"
+
+# Or enable optional features out-of-the-box:
+# langgraph = { version = "0.2.0", features = ["prebuilt", "providers", "sqlite"] }
+```
+
+### Cargo Features
+
+The `langgraph` umbrella crate organizes the ecosystem into separate cargo features:
+
+- `prebuilt`: ReAct agent, `ToolNode`, message types, and base chat model trait.
+- `providers`: Model providers integration (OpenAI, compatibility clients).
+- `tracing`: Tracing server, observer, and telemetry.
+- `sqlite`: SQLite checkpointer persistence.
+- `postgres`: PostgreSQL checkpointer persistence.
+
 ### Configure Environment
 
 Copy `.env.example` to `.env` and fill in your specific model information:
@@ -258,7 +281,8 @@ cargo run --example sqlite_checkpoint
 
 | Crate | crates.io Crate Name | Description |
 |-------|----------------------|-------------|
-| `langgraph` | [**`langgraph`**](https://crates.io/crates/langgraph) | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
+| `langgraph` | [**`langgraph`**](https://crates.io/crates/langgraph) | **Main Umbrella Crate** (Run `cargo add langgraph` to install the full suite) |
+| `langgraph-core` | [**`langgraph-core-rs`**](https://crates.io/crates/langgraph-core-rs) | Core engine: StateGraph, Pregel BSP, Channels, Streaming, Runnable |
 | `langgraph-derive` | [**`langgraph-derive`**](https://crates.io/crates/langgraph-derive) | `#[derive(StateGraph)]`, `#[tool]`, and `#[derive(Traceable)]` macros |
 | `langgraph-prebuilt` | [**`langgraph-prebuilt`**](https://crates.io/crates/langgraph-prebuilt) | ReAct agent, ToolNode, Message types, BaseChatModel trait |
 | `langgraph-checkpoint` | [**`langgraph-checkpoint-rs`**](https://crates.io/crates/langgraph-checkpoint-rs) | `BaseCheckpointSaver`, `InMemorySaver`, `InMemoryStore` |
