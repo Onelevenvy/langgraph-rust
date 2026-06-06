@@ -1,6 +1,11 @@
 # langgraph-rust
 
+[![Crates.io](https://img.shields.io/crates/v/langgraph.svg)](https://crates.io/crates/langgraph)
+[![Docs.rs](https://docs.rs/langgraph/badge.svg)](https://docs.rs/langgraph)
+[![License](https://img.shields.io/crates/l/langgraph.svg)](https://github.com/Onelevenvy/langgraph-rust/blob/main/LICENSE)
+
 A Rust implementation of [LangGraph](https://github.com/langchain-ai/langgraph) -- a framework for building stateful, multi-actor applications with LLMs.
+
 
 ## Projects Built with langgraph-rust
 > [!TIP]
