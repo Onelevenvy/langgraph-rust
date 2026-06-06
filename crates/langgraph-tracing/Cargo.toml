@@ -1,9 +1,10 @@
 [package]
 name = "langgraph-tracing"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Lightweight LLM tracing and observability for LangGraph applications"
-license = "MIT"
 
 [dependencies]
 serde = { workspace = true }
@@ -19,6 +20,6 @@ tokio-stream = { workspace = true }
 async-stream = "0.3"
 
 # Integration with langgraph traits
-langgraph = { path = "../langgraph" }
-langgraph-checkpoint = { path = "../langgraph-checkpoint" }
-langgraph-prebuilt = { path = "../langgraph-prebuilt" }
+langgraph = { workspace = true }
+langgraph-checkpoint = { workspace = true }
+langgraph-prebuilt = { workspace = true }

@@ -2,14 +2,17 @@
 name = "langgraph-providers"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LLM providers integration (OpenAI, Anthropic, etc.) for LangGraph applications in Rust"
 
 [lints]
 workspace = true
 
 [dependencies]
-langgraph = { path = "../langgraph" }
-langgraph-prebuilt = { path = "../langgraph-prebuilt" }
-langgraph-checkpoint = { path = "../langgraph-checkpoint" }
+langgraph = { workspace = true }
+langgraph-prebuilt = { workspace = true }
+langgraph-checkpoint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

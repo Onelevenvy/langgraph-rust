@@ -2,6 +2,9 @@
 name = "langgraph-checkpoint"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core checkpointing traits and interfaces for LangGraph applications in Rust"
 
 [lints]
 workspace = true

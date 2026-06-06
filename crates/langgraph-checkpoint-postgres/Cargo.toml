@@ -2,12 +2,15 @@
 name = "langgraph-checkpoint-postgres"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "PostgreSQL checkpointer implementation for LangGraph applications in Rust"
 
 [lints]
 workspace = true
 
 [dependencies]
-langgraph-checkpoint = { path = "../langgraph-checkpoint" }
+langgraph-checkpoint = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }
