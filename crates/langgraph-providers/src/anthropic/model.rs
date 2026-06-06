@@ -55,6 +55,9 @@ enum ContentBlock {
     Text {
         text: String,
     },
+    Image {
+        source: ImageSource,
+    },
     Thinking {
         thinking: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,6 +73,14 @@ enum ContentBlock {
         content: String,
     },
 }
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ImageSource {
+    #[serde(rename = "type")]
+    kind: String,
+    url: String,
+}
+
 
 #[derive(Serialize)]
 struct RawToolDef {
@@ -280,6 +291,31 @@ impl AnthropicModel {
             .unwrap_or("2023-06-01")
     }
 
+    fn convert_content(content: &langgraph_prebuilt::MessageContent) -> RawContent {
+        match content {
+            langgraph_prebuilt::MessageContent::Text(s) => RawContent::Text(s.clone()),
+            langgraph_prebuilt::MessageContent::Blocks(blocks) => {
+                let raw_blocks: Vec<ContentBlock> = blocks
+                    .iter()
+                    .map(|block| match block {
+                        langgraph_prebuilt::ContentBlock::Text { text } => {
+                            ContentBlock::Text { text: text.clone() }
+                        }
+                        langgraph_prebuilt::ContentBlock::ImageUrl { image_url } => {
+                            ContentBlock::Image {
+                                source: ImageSource {
+                                    kind: "url".to_string(),
+                                    url: image_url.url.clone(),
+                                },
+                            }
+                        }
+                    })
+                    .collect();
+                RawContent::Blocks(raw_blocks)
+            }
+        }
+    }
+
     /// Build the request, extracting system messages to top-level.
     fn build_request(
         &self,
@@ -297,7 +333,7 @@ impl AnthropicModel {
                 Message::Human { content, .. } => {
                     raw_messages.push(RawMessage {
                         role: "user".to_string(),
-                        content: RawContent::Text(common::content_text(content)),
+                        content: Self::convert_content(content),
                     });
                 }
                 Message::Ai {
@@ -313,9 +349,29 @@ impl AnthropicModel {
                             signature: None,
                         });
                     }
-                    let text = common::content_text(content);
-                    if !text.is_empty() {
-                        blocks.push(ContentBlock::Text { text });
+                    match content {
+                        langgraph_prebuilt::MessageContent::Text(text) => {
+                            if !text.is_empty() {
+                                blocks.push(ContentBlock::Text { text: text.clone() });
+                            }
+                        }
+                        langgraph_prebuilt::MessageContent::Blocks(b_list) => {
+                            for b in b_list {
+                                match b {
+                                    langgraph_prebuilt::ContentBlock::Text { text } => {
+                                        blocks.push(ContentBlock::Text { text: text.clone() });
+                                    }
+                                    langgraph_prebuilt::ContentBlock::ImageUrl { image_url } => {
+                                        blocks.push(ContentBlock::Image {
+                                            source: ImageSource {
+                                                kind: "url".to_string(),
+                                                url: image_url.url.clone(),
+                                            },
+                                        });
+                                    }
+                                }
+                            }
+                        }
                     }
                     for tc in tool_calls {
                         blocks.push(ContentBlock::ToolUse {
@@ -339,12 +395,27 @@ impl AnthropicModel {
                     tool_call_id,
                     ..
                 } => {
+                    let mut blocks = Vec::new();
+                    match content {
+                        langgraph_prebuilt::MessageContent::Text(text) => {
+                            blocks.push(ContentBlock::ToolResult {
+                                tool_use_id: tool_call_id.clone(),
+                                content: text.clone(),
+                            });
+                        }
+                        langgraph_prebuilt::MessageContent::Blocks(b_list) => {
+                            // Convert back to text since ToolResult content in Anthropic requires a string,
+                            // or represent it appropriately. For simple tool content in Anthropic, we can use the text conversion.
+                            let text = common::content_text(content);
+                            blocks.push(ContentBlock::ToolResult {
+                                tool_use_id: tool_call_id.clone(),
+                                content: text,
+                            });
+                        }
+                    }
                     raw_messages.push(RawMessage {
                         role: "user".to_string(),
-                        content: RawContent::Blocks(vec![ContentBlock::ToolResult {
-                            tool_use_id: tool_call_id.clone(),
-                            content: common::content_text(content),
-                        }]),
+                        content: RawContent::Blocks(blocks),
                     });
                 }
                 Message::Remove { .. } => {}

@@ -13,10 +13,35 @@ use crate::common;
 // ── Request types ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
+#[serde(untagged)]
+enum RawContent {
+    Text(String),
+    Blocks(Vec<OpenAIContentBlock>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAIContentBlock {
+    Text {
+        text: String,
+    },
+    ImageUrl {
+        image_url: OpenAIImageUrl,
+    },
+}
+
+#[derive(Serialize)]
+struct OpenAIImageUrl {
+    url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
 struct RawMessage {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<RawContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<RawToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +49,7 @@ struct RawMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
 }
+
 
 #[derive(Serialize, Clone)]
 struct RawToolCall {
@@ -270,13 +296,48 @@ impl OpenAIModel {
         format!("{}/chat/completions", base)
     }
 
+    fn convert_content(content: &langgraph_prebuilt::MessageContent) -> Option<RawContent> {
+        match content {
+            langgraph_prebuilt::MessageContent::Text(s) => {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(RawContent::Text(s.clone()))
+                }
+            }
+            langgraph_prebuilt::MessageContent::Blocks(blocks) => {
+                let raw_blocks: Vec<OpenAIContentBlock> = blocks
+                    .iter()
+                    .map(|block| match block {
+                        langgraph_prebuilt::ContentBlock::Text { text } => {
+                            OpenAIContentBlock::Text { text: text.clone() }
+                        }
+                        langgraph_prebuilt::ContentBlock::ImageUrl { image_url } => {
+                            OpenAIContentBlock::ImageUrl {
+                                image_url: OpenAIImageUrl {
+                                    url: image_url.url.clone(),
+                                    detail: image_url.detail.clone(),
+                                },
+                            }
+                        }
+                    })
+                    .collect();
+                if raw_blocks.is_empty() {
+                    None
+                } else {
+                    Some(RawContent::Blocks(raw_blocks))
+                }
+            }
+        }
+    }
+
     fn build_messages(&self, messages: &[Message]) -> Vec<RawMessage> {
         messages
             .iter()
             .filter_map(|msg| match msg {
                 Message::Human { content, .. } => Some(RawMessage {
                     role: "user".to_string(),
-                    content: Some(common::content_text(content)),
+                    content: Self::convert_content(content),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
@@ -287,7 +348,6 @@ impl OpenAIModel {
                     thinking,
                     ..
                 } => {
-                    let text = common::content_text(content);
                     let tc = if tool_calls.is_empty() {
                         None
                     } else {
@@ -312,7 +372,7 @@ impl OpenAIModel {
                     };
                     Some(RawMessage {
                         role: "assistant".to_string(),
-                        content: if text.is_empty() { None } else { Some(text) },
+                        content: Self::convert_content(content),
                         tool_calls: tc,
                         tool_call_id: None,
                         reasoning_content: thinking.clone(),
@@ -320,7 +380,7 @@ impl OpenAIModel {
                 }
                 Message::System { content, .. } => Some(RawMessage {
                     role: "system".to_string(),
-                    content: Some(common::content_text(content)),
+                    content: Self::convert_content(content),
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
@@ -331,7 +391,7 @@ impl OpenAIModel {
                     ..
                 } => Some(RawMessage {
                     role: "tool".to_string(),
-                    content: Some(common::content_text(content)),
+                    content: Self::convert_content(content),
                     tool_calls: None,
                     tool_call_id: Some(tool_call_id.clone()),
                     reasoning_content: None,
