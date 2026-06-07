@@ -113,10 +113,10 @@ OPENAI_MODEL=xxxxxxx
 ### Define a ReAct Agent with Tools
 
 ```rust
-use langgraph_derive::tool;
-use langgraph_prebuilt::{create_react_agent, prepare_tools, ReActAgentConfig};
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
-use langgraph_checkpoint::config::RunnableConfig;
+use langgraph::tool;
+use langgraph::prebuilt::{create_react_agent, prepare_tools, ReActAgentConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::prelude::RunnableConfig;
 use std::sync::Arc;
 
 // Define tools with the #[tool] macro
@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use langgraph::prelude::*;
-use langgraph_derive::langgraph_state;
+use langgraph::langgraph_state;
 use langgraph::channels::binop::append_reducer;
 
 #[langgraph_state]

@@ -5,13 +5,13 @@ use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
 use langgraph::prelude::*;
-use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
-use langgraph_derive::{langgraph_state, tool};
-use langgraph_prebuilt::{
+use langgraph::checkpoint::InMemorySaver;
+use langgraph::{langgraph_state, tool};
+use langgraph::prebuilt::{
     prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message,
     ToolNode,
 };
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();

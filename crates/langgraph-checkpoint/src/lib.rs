@@ -8,7 +8,7 @@ pub mod store;
 pub use checkpoint::base::BaseCheckpointSaver;
 pub use checkpoint::memory::InMemorySaver;
 pub use checkpoint::types::{
-    ChannelVersion, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointTuple, PendingWrite,
+    ChannelVersion, ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointSource, CheckpointTuple, PendingWrite,
 };
 pub use config::RunnableConfig;
 pub use serde::base::SerializerProtocol;

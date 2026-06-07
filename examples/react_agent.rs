@@ -1,8 +1,8 @@
 use dotenvy::dotenv;
-use langgraph_checkpoint::config::RunnableConfig;
-use langgraph_derive::tool;
-use langgraph_prebuilt::{create_react_agent, prepare_tools, print_result, ReActAgentConfig};
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::prelude::RunnableConfig;
+use langgraph::tool;
+use langgraph::prebuilt::{create_react_agent, prepare_tools, print_result, ReActAgentConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 use std::sync::Arc;
 

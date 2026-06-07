@@ -1,20 +1,20 @@
 use dotenvy::dotenv;
 use langgraph::prelude::*;
-use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
-use langgraph_checkpoint::config::RunnableConfigExt;
-use langgraph_derive::{langgraph_state, tool, Traceable};
-use langgraph_prebuilt::{
+use langgraph::checkpoint::InMemorySaver;
+use langgraph::checkpoint::config::RunnableConfigExt;
+use langgraph::{langgraph_state, tool, Traceable};
+use langgraph::prebuilt::{
     prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message,
     ToolNode,
 };
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::io::{self, Write};
 use std::sync::Arc;
 
 // Tracing imports - only TracingChatModel needed for LLM wrapping
-use langgraph_tracing::TracingChatModel;
+use langgraph::tracing::TracingChatModel;
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
