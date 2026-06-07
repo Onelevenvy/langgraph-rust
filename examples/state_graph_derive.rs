@@ -1,6 +1,6 @@
 use langgraph::prelude::*;
-use langgraph_derive::langgraph_state;
-use langgraph_prebuilt::Message;
+use langgraph::langgraph_state;
+use langgraph::prebuilt::Message;
 
 #[langgraph_state]
 #[derive(Debug)]

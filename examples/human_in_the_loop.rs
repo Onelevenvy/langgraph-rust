@@ -1,11 +1,11 @@
 use dotenvy::dotenv;
 use langgraph::prelude::*;
-use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
-use langgraph_derive::{langgraph_state, tool};
-use langgraph_prebuilt::{
+use langgraph::checkpoint::InMemorySaver;
+use langgraph::{langgraph_state, tool};
+use langgraph::prebuilt::{
     invoke_llm, prepare_tools, tools_condition, BaseChatModel, Message, ToolError, ToolNode,
 };
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 

@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 
-use langgraph_checkpoint::checkpoint::base::BaseCheckpointSaver;
-use langgraph_checkpoint::checkpoint::types::{
+use langgraph::checkpoint::BaseCheckpointSaver;
+use langgraph::checkpoint::checkpoint::types::{
     ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointSource,
 };
-use langgraph_checkpoint::config::RunnableConfig;
-use langgraph_checkpoint_sqlite::SqliteSaver;
+use langgraph::prelude::RunnableConfig;
+use langgraph::sqlite::SqliteSaver;
 use serde_json::Value as JsonValue;
 
 fn config_for(thread_id: &str) -> RunnableConfig {

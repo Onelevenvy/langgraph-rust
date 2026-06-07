@@ -2,7 +2,7 @@ use serde_json::{json, Value as JsonValue};
 
 
 use langgraph::prelude::*;
-use langgraph_derive::langgraph_state;
+use langgraph::langgraph_state;
 
 // ── State ─────────────────────────────────────────────────────────────────
 #[langgraph_state]

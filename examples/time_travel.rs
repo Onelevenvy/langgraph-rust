@@ -4,12 +4,12 @@ use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
 use langgraph::prelude::*;
-use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
-use langgraph_derive::{langgraph_state, tool};
-use langgraph_prebuilt::{
+use langgraph::checkpoint::InMemorySaver;
+use langgraph::{langgraph_state, tool};
+use langgraph::prebuilt::{
     invoke_llm, prepare_tools, print_result, tools_condition, BaseChatModel, Message, ToolNode,
 };
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -51,7 +51,7 @@ fn search(query: String) -> Result<String, String> {
 
 fn build_graph(
     model: Arc<dyn BaseChatModel>,
-    tools: Vec<Arc<dyn langgraph_prebuilt::traits::BaseTool>>,
+    tools: Vec<Arc<dyn langgraph::prebuilt::traits::BaseTool>>,
 ) -> Result<CompiledStateGraph, Box<dyn std::error::Error>> {
     let prepared = prepare_tools(tools);
     let model_with_tools: Arc<dyn BaseChatModel> = model.bind_tools(prepared.tool_defs).into();
@@ -107,7 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build graph with the simplified #[tool] macro
     // `fn search` is automatically compiled into a `Search` struct by the macro
-    let tools: Vec<Arc<dyn langgraph_prebuilt::traits::BaseTool>> = vec![Arc::new(Search::new())];
+    let tools: Vec<Arc<dyn langgraph::prebuilt::traits::BaseTool>> = vec![Arc::new(Search::new())];
     let app = build_graph(Arc::new(model), tools)?;
 
     let mut config = RunnableConfig::new();

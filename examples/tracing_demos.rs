@@ -1,5 +1,5 @@
-use langgraph_derive::Traceable;
-use langgraph_tracing::{TraceStatus, TracingContext};
+use langgraph::Traceable;
+use langgraph::tracing::{TraceStatus, TracingContext};
 use serde_json::json;
 
 /// Demo: manually create traces and spans to test the tracing UI.

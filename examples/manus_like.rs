@@ -4,9 +4,9 @@ use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
 use langgraph::prelude::*;
-use langgraph_derive::langgraph_state;
-use langgraph_prebuilt::{ask_json, print_stream, response_text, stream_llm, BaseChatModel, Message};
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::langgraph_state;
+use langgraph::prebuilt::{ask_json, print_stream, response_text, stream_llm, BaseChatModel, Message};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();

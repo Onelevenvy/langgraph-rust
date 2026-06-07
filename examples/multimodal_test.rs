@@ -1,6 +1,6 @@
 use dotenvy::dotenv;
-use langgraph_prebuilt::{BaseChatModel, Message, MessageContent, ContentBlock, ImageUrl};
-use langgraph_providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::prebuilt::{BaseChatModel, Message, MessageContent, ContentBlock, ImageUrl};
+use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

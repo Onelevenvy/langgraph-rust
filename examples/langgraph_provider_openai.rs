@@ -3,9 +3,9 @@ use serde_json::Value as JsonValue;
 use dotenvy::dotenv;
 use langgraph::prelude::*;
 use langgraph::runnable::{RunnableCallable, RunnableError};
-use langgraph_checkpoint::config::RunnableConfig;
-use langgraph_prebuilt::{print_result, BaseChatModel, Message};
-use langgraph_providers::openai::OpenAIModel;
+use langgraph::prelude::RunnableConfig;
+use langgraph::prebuilt::{print_result, BaseChatModel, Message};
+use langgraph::providers::openai::OpenAIModel;
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.block_on(async {
         // 1. Create the OpenAI-compatible model
         let (api_key, api_base, model_name) = load_openai_config();
-        let model = OpenAIModel::new(langgraph_providers::openai::OpenAIModelConfig {
+        let model = OpenAIModel::new(langgraph::providers::openai::OpenAIModelConfig {
             model: model_name.clone(),
             api_key,
             api_base,
