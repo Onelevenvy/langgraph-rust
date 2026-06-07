@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use langgraph::checkpoint::BaseCheckpointSaver;
-use langgraph::checkpoint::checkpoint::types::{
+use langgraph::checkpoint::{
     ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointSource,
 };
 use langgraph::prelude::RunnableConfig;
