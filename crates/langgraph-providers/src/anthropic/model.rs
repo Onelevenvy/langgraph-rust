@@ -114,6 +114,10 @@ struct RawUsage {
     input_tokens: u32,
     #[serde(default)]
     output_tokens: u32,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 // ── Streaming types ────────────────────────────────────────────────
@@ -462,6 +466,8 @@ impl AnthropicModel {
             prompt_tokens: raw.input_tokens,
             completion_tokens: raw.output_tokens,
             total_tokens: raw.input_tokens + raw.output_tokens,
+            cache_creation_tokens: raw.cache_creation_input_tokens,
+            cache_read_tokens: raw.cache_read_input_tokens,
         }
     }
 
@@ -664,10 +670,14 @@ impl BaseChatModel for AnthropicModel {
                             if let Ok(ev) = serde_json::from_str::<MessageDeltaEvent>(data_line) {
                                 if let Some(u) = ev.usage {
                                     let prompt = usage.as_ref().map(|u| u.prompt_tokens).unwrap_or(0);
+                                    let creation = usage.as_ref().and_then(|u| u.cache_creation_tokens);
+                                    let read = usage.as_ref().and_then(|u| u.cache_read_tokens);
                                     usage = Some(LlmUsage {
                                         prompt_tokens: prompt,
                                         completion_tokens: u.output_tokens,
                                         total_tokens: prompt + u.output_tokens,
+                                        cache_creation_tokens: creation,
+                                        cache_read_tokens: read,
                                     });
                                 }
                             }

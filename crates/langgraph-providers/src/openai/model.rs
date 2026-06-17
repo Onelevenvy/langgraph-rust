@@ -157,6 +157,14 @@ struct RawUsage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u32,
 }
 
 // ── Streaming types ────────────────────────────────────────────────
@@ -426,10 +434,13 @@ impl OpenAIModel {
     }
 
     fn extract_usage(raw: &RawUsage) -> LlmUsage {
+        let cached = raw.prompt_tokens_details.as_ref().map(|d| d.cached_tokens);
         LlmUsage {
             prompt_tokens: raw.prompt_tokens,
             completion_tokens: raw.completion_tokens,
             total_tokens: raw.total_tokens,
+            cache_creation_tokens: None,
+            cache_read_tokens: cached,
         }
     }
 
