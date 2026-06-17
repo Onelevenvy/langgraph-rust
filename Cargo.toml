@@ -24,7 +24,7 @@ repository.workspace = true
 description = "A Rust implementation of LangGraph for building stateful, multi-actor applications with LLMs (Full suite)"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
