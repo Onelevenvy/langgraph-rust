@@ -616,7 +616,9 @@ impl BaseChatModel for OpenAIModel {
                                     }
                                     if let Some(func) = &tc.function {
                                         if let Some(name) = &func.name {
-                                            buf.1 = name.clone();
+                                            if !name.is_empty() {
+                                                buf.1 = name.clone();
+                                            }
                                         }
                                         if let Some(args) = &func.arguments {
                                             buf.2.push_str(args);
