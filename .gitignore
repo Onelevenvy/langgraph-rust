@@ -108,3 +108,4 @@ crates/langgraph-tracing/frontend/node_modules/*
 *.db-shm
 *db
 publish.sh
+publish.ps1
