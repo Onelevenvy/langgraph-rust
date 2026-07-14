@@ -96,6 +96,9 @@ struct RawRequest {
     stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<serde_json::Value>,
+    #[serde(flatten)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra_body: Option<serde_json::Value>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -226,6 +229,8 @@ pub struct OpenAIModelConfig {
     pub presence_penalty: Option<f32>,
     /// Response format (e.g., {"type": "json_object"} or {"type": "json_schema", ...}).
     pub response_format: Option<serde_json::Value>,
+    ///Extra Body
+    pub extra_body: Option<serde_json::Value>,
 }
 
 impl Default for OpenAIModelConfig {
@@ -240,6 +245,7 @@ impl Default for OpenAIModelConfig {
             frequency_penalty: None,
             presence_penalty: None,
             response_format: None,
+            extra_body:None,
         }
     }
 }
@@ -468,6 +474,7 @@ impl BaseChatModel for OpenAIModel {
             stream: false,
             stream_options: None,
             response_format: self.config.response_format.clone(),
+            extra_body: self.config.extra_body.clone(),
         };
 
         let response = self
@@ -546,7 +553,9 @@ impl BaseChatModel for OpenAIModel {
                 stream: true,
                 stream_options: Some(StreamOptions { include_usage: true }),
                 response_format: self.config.response_format.clone(),
+                extra_body: self.config.extra_body.clone(),
             };
+            eprintln!("[REQUEST] {}", serde_json::to_string_pretty(&request).unwrap());
 
             let es_builder = self
                 .client
