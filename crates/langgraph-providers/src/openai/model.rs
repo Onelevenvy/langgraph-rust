@@ -555,7 +555,6 @@ impl BaseChatModel for OpenAIModel {
                 response_format: self.config.response_format.clone(),
                 extra_body: self.config.extra_body.clone(),
             };
-            eprintln!("[REQUEST] {}", serde_json::to_string_pretty(&request).unwrap());
 
             let es_builder = self
                 .client
