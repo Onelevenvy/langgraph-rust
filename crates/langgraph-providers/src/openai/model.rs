@@ -245,7 +245,7 @@ impl Default for OpenAIModelConfig {
             frequency_penalty: None,
             presence_penalty: None,
             response_format: None,
-            extra_body:None,
+            extra_body: None,
         }
     }
 }
@@ -441,6 +441,24 @@ impl OpenAIModel {
             cache_read_tokens: cached,
         }
     }
+
+    fn sanitize_extra_body(
+        extra: Option<serde_json::Value>,
+        reserved_keys: &[&str],
+    ) -> Option<serde_json::Value> {
+        let mut extra = extra?;
+        if let Some(obj) = extra.as_object_mut() {
+            for key in reserved_keys {
+                obj.remove(*key);
+            }
+            if obj.is_empty() {
+                return None;
+            }
+            return Some(serde_json::Value::Object(obj.clone()));
+        } else {
+            return None;
+        }
+    }
 }
 
 #[async_trait]
@@ -462,6 +480,24 @@ impl BaseChatModel for OpenAIModel {
         messages: &[Message],
         _config: &RunnableConfig,
     ) -> Result<Message, ModelError> {
+        //构造extra_body
+        let extra_body = Self::sanitize_extra_body(
+            self.config.extra_body.clone(),
+            &[
+                "model",
+                "messages",
+                "temperature",
+                "max_tokens",
+                "top_p",
+                "frequency_penalty",
+                "presence_penalty",
+                "tools",
+                "stream",
+                "stream_options",
+                "response_format",
+            ],
+        );
+
         let request = RawRequest {
             model: self.config.model.clone(),
             messages: self.build_messages(messages),
@@ -474,7 +510,7 @@ impl BaseChatModel for OpenAIModel {
             stream: false,
             stream_options: None,
             response_format: self.config.response_format.clone(),
-            extra_body: self.config.extra_body.clone(),
+            extra_body,
         };
 
         let response = self
@@ -541,119 +577,125 @@ impl BaseChatModel for OpenAIModel {
         _config: &'a RunnableConfig,
     ) -> MessageStream<'a> {
         Box::pin(async_stream::stream! {
-            let request = RawRequest {
-                model: self.config.model.clone(),
-                messages: self.build_messages(messages),
-                temperature: self.config.temperature,
-                max_tokens: self.config.max_tokens,
-                top_p: self.config.top_p,
-                frequency_penalty: self.config.frequency_penalty,
-                presence_penalty: self.config.presence_penalty,
-                tools: self.build_tools(),
-                stream: true,
-                stream_options: Some(StreamOptions { include_usage: true }),
-                response_format: self.config.response_format.clone(),
-                extra_body: self.config.extra_body.clone(),
-            };
+               let extra_body = Self::sanitize_extra_body(self.config.extra_body.clone(),
+        &["model", "messages", "temperature", "max_tokens", "top_p",
+         "frequency_penalty", "presence_penalty", "tools", "stream",
+         "stream_options", "response_format"]);
 
-            let es_builder = self
-                .client
-                .post(self.api_url())
-                .header("Authorization", format!("Bearer {}", self.config.api_key))
-                .header("Content-Type", "application/json")
-                .json(&request);
 
-            let mut event_source = es_builder
-                .eventsource()
-                .map_err(|e| ModelError::Invocation(e.to_string()))?;
+               let request = RawRequest {
+                   model: self.config.model.clone(),
+                   messages: self.build_messages(messages),
+                   temperature: self.config.temperature,
+                   max_tokens: self.config.max_tokens,
+                   top_p: self.config.top_p,
+                   frequency_penalty: self.config.frequency_penalty,
+                   presence_penalty: self.config.presence_penalty,
+                   tools: self.build_tools(),
+                   stream: true,
+                   stream_options: Some(StreamOptions { include_usage: true }),
+                   response_format: self.config.response_format.clone(),
+                   extra_body,
+               };
 
-            let mut accumulated_content = String::new();
-            let mut accumulated_thinking = String::new();
-            let mut tool_call_buffers: Vec<(Option<String>, String, String)> = Vec::new();
-            let mut usage: Option<LlmUsage> = None;
+               let es_builder = self
+                   .client
+                   .post(self.api_url())
+                   .header("Authorization", format!("Bearer {}", self.config.api_key))
+                   .header("Content-Type", "application/json")
+                   .json(&request);
 
-            while let Some(event) = event_source.next().await {
-                let event = event.map_err(|e| ModelError::Invocation(e.to_string()))?;
+               let mut event_source = es_builder
+                   .eventsource()
+                   .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-                match event {
-                    Event::Open => continue,
-                    Event::Message(msg) => {
-                        if msg.data == "[DONE]" {
-                            break;
-                        }
+               let mut accumulated_content = String::new();
+               let mut accumulated_thinking = String::new();
+               let mut tool_call_buffers: Vec<(Option<String>, String, String)> = Vec::new();
+               let mut usage: Option<LlmUsage> = None;
 
-                        let chunk: StreamChunk = serde_json::from_str(&msg.data)
-                            .map_err(|e| ModelError::Invocation(e.to_string()))?;
+               while let Some(event) = event_source.next().await {
+                   let event = event.map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-                        if let Some(u) = chunk.usage {
-                            usage = Some(Self::extract_usage(&u));
-                        }
+                   match event {
+                       Event::Open => continue,
+                       Event::Message(msg) => {
+                           if msg.data == "[DONE]" {
+                               break;
+                           }
 
-                        if let Some(choice) = chunk.choices.first() {
-                            let delta = &choice.delta;
+                           let chunk: StreamChunk = serde_json::from_str(&msg.data)
+                               .map_err(|e| ModelError::Invocation(e.to_string()))?;
 
-                            // Stream thinking delta — incremental only
-                            if let Some(ref thinking) = delta.reasoning_content {
-                                accumulated_thinking.push_str(thinking);
-                                yield Ok(Message::ai_with_thinking("", thinking.clone()));
-                            }
+                           if let Some(u) = chunk.usage {
+                               usage = Some(Self::extract_usage(&u));
+                           }
 
-                            // Stream answer delta — incremental only
-                            if let Some(ref content) = delta.content {
-                                accumulated_content.push_str(content);
-                                yield Ok(Message::ai(content.clone()));
-                            }
+                           if let Some(choice) = chunk.choices.first() {
+                               let delta = &choice.delta;
 
-                            // Accumulate tool call fragments (not yielded until done)
-                            if let Some(calls) = &delta.tool_calls {
-                                for tc in calls {
-                                    let idx = tc.index;
-                                    while tool_call_buffers.len() <= idx {
-                                        tool_call_buffers.push((None, String::new(), String::new()));
-                                    }
-                                    let buf = &mut tool_call_buffers[idx];
-                                    if let Some(id) = &tc.id {
-                                        buf.0 = Some(id.clone());
-                                    }
-                                    if let Some(func) = &tc.function {
-                                        if let Some(name) = &func.name {
-                                            if !name.is_empty() {
-                                                buf.1 = name.clone();
-                                            }
-                                        }
-                                        if let Some(args) = &func.arguments {
-                                            buf.2.push_str(args);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                               // Stream thinking delta — incremental only
+                               if let Some(ref thinking) = delta.reasoning_content {
+                                   accumulated_thinking.push_str(thinking);
+                                   yield Ok(Message::ai_with_thinking("", thinking.clone()));
+                               }
 
-            // After the SSE stream ends, yield ONE final chunk containing only
-            // the assembled tool calls (if any). Content/thinking are left empty
-            // because they have already been streamed incrementally above.
-            // Consumers that only need the final assembled Message (e.g. invoke)
-            // should call `ainvoke` instead. Consumers of `astream` that need
-            // tool calls can detect this chunk via `has_tool_calls()`.
-            if !tool_call_buffers.is_empty() {
-                let tool_calls: Vec<ToolCall> = tool_call_buffers
-                    .into_iter()
-                    .filter(|(_, name, _)| !name.is_empty())
-                    .map(|(id, name, args)| {
-                        let args_json = serde_json::from_str(&args)
-                            .unwrap_or(serde_json::json!({}));
-                        ToolCall { name, args: args_json, id }
-                    })
-                    .collect();
+                               // Stream answer delta — incremental only
+                               if let Some(ref content) = delta.content {
+                                   accumulated_content.push_str(content);
+                                   yield Ok(Message::ai(content.clone()));
+                               }
 
-                yield Ok(common::build_ai_message(String::new(), tool_calls, None, usage));
-            } else if usage.is_some() {
-                yield Ok(common::build_ai_message(String::new(), Vec::new(), None, usage));
-            }
-        })
+                               // Accumulate tool call fragments (not yielded until done)
+                               if let Some(calls) = &delta.tool_calls {
+                                   for tc in calls {
+                                       let idx = tc.index;
+                                       while tool_call_buffers.len() <= idx {
+                                           tool_call_buffers.push((None, String::new(), String::new()));
+                                       }
+                                       let buf = &mut tool_call_buffers[idx];
+                                       if let Some(id) = &tc.id {
+                                           buf.0 = Some(id.clone());
+                                       }
+                                       if let Some(func) = &tc.function {
+                                           if let Some(name) = &func.name {
+                                               if !name.is_empty() {
+                                                   buf.1 = name.clone();
+                                               }
+                                           }
+                                           if let Some(args) = &func.arguments {
+                                               buf.2.push_str(args);
+                                           }
+                                       }
+                                   }
+                               }
+                           }
+                       }
+                   }
+               }
+
+               // After the SSE stream ends, yield ONE final chunk containing only
+               // the assembled tool calls (if any). Content/thinking are left empty
+               // because they have already been streamed incrementally above.
+               // Consumers that only need the final assembled Message (e.g. invoke)
+               // should call `ainvoke` instead. Consumers of `astream` that need
+               // tool calls can detect this chunk via `has_tool_calls()`.
+               if !tool_call_buffers.is_empty() {
+                   let tool_calls: Vec<ToolCall> = tool_call_buffers
+                       .into_iter()
+                       .filter(|(_, name, _)| !name.is_empty())
+                       .map(|(id, name, args)| {
+                           let args_json = serde_json::from_str(&args)
+                               .unwrap_or(serde_json::json!({}));
+                           ToolCall { name, args: args_json, id }
+                       })
+                       .collect();
+
+                   yield Ok(common::build_ai_message(String::new(), tool_calls, None, usage));
+               } else if usage.is_some() {
+                   yield Ok(common::build_ai_message(String::new(), Vec::new(), None, usage));
+               }
+           })
     }
 
     fn bind_tools(&self, tools: Vec<ToolDef>) -> Box<dyn BaseChatModel> {
@@ -773,5 +815,61 @@ mod tests {
         let msg = Message::ai_with_thinking("The answer is 4", "Let me think: 2+2=4");
         assert_eq!(msg.thinking(), Some("Let me think: 2+2=4"));
         assert_eq!(msg.text(), Some("The answer is 4"));
+    }
+
+    #[test]
+    fn test_extra_body_flatten() {
+        let config = OpenAIModelConfig {
+            model: "gpt-4".to_string(),
+            api_key: "test".to_string(),
+            extra_body: Some(serde_json::json!({
+                "enable_thinking": false,
+                "custom_param": "value"
+            })),
+            ..Default::default()
+        };
+        let model = OpenAIModel::new(config);
+        let request = RawRequest {
+            model: model.config.model.clone(),
+            messages: vec![],
+            temperature: Some(0.7),
+            max_tokens: None,
+            top_p: None,
+            frequency_penalty: None,
+            presence_penalty: None,
+            tools: None,
+            stream: false,
+            stream_options: None,
+            response_format: None,
+            extra_body: model.config.extra_body.clone(),
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["enable_thinking"], false);
+        assert_eq!(value["custom_param"], "value");
+        assert!(value.get("extra_body").is_none());
+    }
+    #[test]
+    fn test_extra_body_conflict_filter() {
+        let extra = Some(serde_json::json!({
+            "temperature": 0.9,   // 冲突
+            "model": "gpt-5",     // 冲突
+            "custom": "keep"      // 不冲突
+        }));
+        let reserved = vec!["model", "temperature", "stream", "tools", "messages"];
+        let filtered = OpenAIModel::sanitize_extra_body(extra, &reserved);
+        let filtered_value = filtered.unwrap();
+        assert!(filtered_value.get("temperature").is_none());
+        assert!(filtered_value.get("model").is_none());
+        assert_eq!(filtered_value["custom"], "keep");
+    }
+    #[test]
+    fn test_extra_body_empty_after_filter() {
+        let extra = Some(serde_json::json!({
+            "temperature": 0.9,
+            "model": "gpt-5"
+        }));
+        let reserved = vec!["model", "temperature"];
+        let filtered = OpenAIModel::sanitize_extra_body(extra, &reserved);
+        assert!(filtered.is_none());
     }
 }

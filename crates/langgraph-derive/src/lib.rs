@@ -338,7 +338,6 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     let extractions: Vec<proc_macro2::TokenStream> = params.iter().map(|(name, ty)| {
         let name_str = name.to_string();
         let err_invalid = format!("invalid parameter '{}': {{}}", name_str);
-
         if is_option(ty) {
             quote! {
                 let #name: #ty = match args.get(#name_str) {
