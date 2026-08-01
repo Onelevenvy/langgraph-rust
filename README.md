@@ -74,13 +74,13 @@ Or configure it in your `Cargo.toml` manually:
 ```toml
 [dependencies]
 # Basic core package
-langgraph = "0.2.1"
+langgraph = "0.2.5"
 
 # Or enable specific features:
-# langgraph = { version = "0.2.1", features = ["prebuilt", "providers", "sqlite", "postgres"] }
+# langgraph = { version = "0.2.5", features = ["prebuilt", "providers", "sqlite", "postgres"] }
 
 # Or enable all features at once:
-# langgraph = { version = "0.2.1", features = ["full"] }
+# langgraph = { version = "0.2.5", features = ["full"] }
 ```
 
 ### Cargo Features
