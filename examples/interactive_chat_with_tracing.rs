@@ -7,7 +7,6 @@ use langgraph::prebuilt::{
 use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 use langgraph::{langgraph_state, tool, Traceable};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::io::{self, Write};
 use std::sync::Arc;

@@ -91,7 +91,7 @@ impl TracingStore for InMemoryTracingStore {
             .collect();
 
         // Sort newest first
-        summaries.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.start_time));
 
         let offset = filter.offset.unwrap_or(0);
         let limit = filter.limit.unwrap_or(summaries.len());

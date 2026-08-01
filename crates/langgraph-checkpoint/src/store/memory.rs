@@ -186,7 +186,7 @@ impl BaseStore for InMemoryStore {
                         }
                     }
 
-                    items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                    items.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
                     let total = items.len();
                     let start = search_op.offset.min(total);
                     let end = (start + search_op.limit).min(total);

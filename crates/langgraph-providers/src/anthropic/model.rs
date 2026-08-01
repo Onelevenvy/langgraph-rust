@@ -174,6 +174,7 @@ enum ContentBlockStart {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 enum ContentBlockDelta {
     TextDelta { text: String },
     InputJsonDelta { partial_json: String },
@@ -687,7 +688,8 @@ impl BaseChatModel for AnthropicModel {
                         "message_stop" => {
                             break;
                         }
-                        "ping" | _ => {}
+                        "ping" => {}
+                        _ => {}
                     }
                 }
             }

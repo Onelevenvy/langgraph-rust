@@ -224,12 +224,15 @@ impl BaseChatModel for Box<dyn BaseChatModel> {
     }
 }
 
+/// A tool function: maps an input JSON value to an output JSON value.
+pub type ToolFn = Box<dyn Fn(&JsonValue) -> Result<JsonValue, ToolError> + Send + Sync>;
+
 /// A simple tool implemented as a closure.
 pub struct ClosureTool {
     tool_name: String,
     tool_description: String,
     tool_parameters: Option<JsonValue>,
-    func: Box<dyn Fn(&JsonValue) -> Result<JsonValue, ToolError> + Send + Sync>,
+    func: ToolFn,
 }
 
 impl ClosureTool {

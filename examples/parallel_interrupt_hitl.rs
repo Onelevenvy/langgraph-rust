@@ -76,7 +76,6 @@ async fn worker_b_node(
 }
 
 /// Output node: triggered only by worker_a's edge.
-
 async fn output_node(
     _input: JsonValue,
     _config: RunnableConfig,

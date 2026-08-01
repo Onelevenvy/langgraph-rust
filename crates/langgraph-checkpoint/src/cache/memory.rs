@@ -5,10 +5,12 @@ use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
+/// namespace -> key -> (type_tag, bytes, expire_at_unix_secs)
+type CacheMap = HashMap<CacheNamespace, HashMap<String, (String, Vec<u8>, Option<f64>)>>;
+
 /// In-memory cache implementation
 pub struct InMemoryCache {
-    /// namespace -> key -> (type_tag, bytes, expire_at_unix_secs)
-    cache: RwLock<HashMap<CacheNamespace, HashMap<String, (String, Vec<u8>, Option<f64>)>>>,
+    cache: RwLock<CacheMap>,
 }
 
 impl InMemoryCache {
@@ -127,7 +129,7 @@ mod tests {
         cache
             .set(&[((ns.clone(), "k1".to_string()), serde_json::json!(1), None)])
             .unwrap();
-        cache.clear(Some(&[ns.clone()])).unwrap();
+        cache.clear(Some(std::slice::from_ref(&ns))).unwrap();
         let result = cache.get(&[(ns, "k1".to_string())]).unwrap();
         assert!(result.is_empty());
     }

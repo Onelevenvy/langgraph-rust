@@ -20,6 +20,9 @@ use langgraph_checkpoint::serde::jsonplus::JsonPlusSerializer;
 
 use crate::queries::*;
 
+/// A dumped blob row: (thread_id, checkpoint_ns, channel, type, checkpoint_id, data)
+type BlobDumpRow = (String, String, String, String, String, Option<Vec<u8>>);
+
 /// Async SQLite checkpoint saver using sqlx.
 ///
 /// Uses a three-table schema (`checkpoints`, `checkpoint_blobs`,
@@ -218,7 +221,7 @@ impl SqliteSaver {
         checkpoint_ns: &str,
         values: &HashMap<String, JsonValue>,
         versions: &ChannelVersions,
-    ) -> Vec<(String, String, String, String, String, Option<Vec<u8>>)> {
+    ) -> Vec<BlobDumpRow> {
         let mut result = Vec::new();
         for (channel, ver) in versions {
             let ver_str = match ver {

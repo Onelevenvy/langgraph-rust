@@ -279,7 +279,7 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
                                 continue;
                             }
                             if !extracted_desc.is_empty() {
-                                extracted_desc.push_str(" ");
+                                extracted_desc.push(' ');
                             }
                             extracted_desc.push_str(trimmed);
                         }

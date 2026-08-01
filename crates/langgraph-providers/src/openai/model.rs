@@ -447,17 +447,14 @@ impl OpenAIModel {
         reserved_keys: &[&str],
     ) -> Option<serde_json::Value> {
         let mut extra = extra?;
-        if let Some(obj) = extra.as_object_mut() {
-            for key in reserved_keys {
-                obj.remove(*key);
-            }
-            if obj.is_empty() {
-                return None;
-            }
-            return Some(serde_json::Value::Object(obj.clone()));
-        } else {
+        let obj = extra.as_object_mut()?;
+        for key in reserved_keys {
+            obj.remove(*key);
+        }
+        if obj.is_empty() {
             return None;
         }
+        Some(serde_json::Value::Object(obj.clone()))
     }
 }
 

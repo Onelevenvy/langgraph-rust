@@ -42,6 +42,7 @@ fn version_gt(a: &JsonValue, b: &JsonValue) -> bool {
 ///
 /// This is the "Plan" phase of the BSP cycle. It checks which nodes
 /// have trigger channels with newer versions than what the node last saw.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_next_tasks(
     nodes: &HashMap<String, PregelNode>,
     channels: &HashMap<String, Box<dyn Channel>>,
@@ -292,12 +293,10 @@ pub fn apply_writes(
     //    This allows ephemeral channels to clear themselves and notify downstream.
     if bump_step {
         for (chan, ch) in channels.iter() {
-            if ch.is_available() && !updated.contains(chan) {
-                if ch.update(&[]).unwrap_or(false) {
-                    channel_versions.insert(chan.clone(), next_version.clone());
-                    if ch.is_available() {
-                        updated.insert(chan.clone());
-                    }
+            if ch.is_available() && !updated.contains(chan) && ch.update(&[]).unwrap_or(false) {
+                channel_versions.insert(chan.clone(), next_version.clone());
+                if ch.is_available() {
+                    updated.insert(chan.clone());
                 }
             }
         }

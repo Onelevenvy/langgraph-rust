@@ -260,6 +260,7 @@ impl StateGraph {
     }
 
     /// Internal: compile with explicit parameters.
+    #[allow(clippy::too_many_arguments)]
     fn compile_with(
         &mut self,
         checkpointer: Option<Arc<dyn BaseCheckpointSaver>>,
@@ -596,7 +597,7 @@ impl CompiledStateGraph {
             for (tid, chan, val) in pending {
                 if tid == NULL_TASK_ID {
                     if let Some(ch) = channels.get(chan) {
-                        ch.update(&[val.clone()]).ok();
+                        ch.update(std::slice::from_ref(val)).ok();
                     }
                 }
             }
@@ -793,7 +794,7 @@ impl CompiledStateGraph {
         if let Some(obj) = values.as_object() {
             for (key, val) in obj {
                 if let Some(ch) = channels.get(key) {
-                    ch.update(&[val.clone()]).ok();
+                    ch.update(std::slice::from_ref(val)).ok();
                     // Bump the channel version
                     let new_version = channel_versions
                         .get(key)
@@ -883,12 +884,12 @@ impl CompiledStateGraph {
                     }
                     if tid == NULL_TASK_ID {
                         if let Some(ch) = channels.get(chan) {
-                            ch.update(&[val.clone()]).ok();
+                            ch.update(std::slice::from_ref(val)).ok();
                         }
                         continue;
                     }
                     if let Some(ch) = channels.get(chan) {
-                        ch.update(&[val.clone()]).ok();
+                        ch.update(std::slice::from_ref(val)).ok();
                     }
                 }
             }
@@ -1372,7 +1373,7 @@ impl CompiledStateGraph {
                             for (_task_id, channel, value) in pending {
                                 if channel != RESUME {
                                     if let Some(ch) = restored.get(channel) {
-                                        ch.update(&[value.clone()]).ok();
+                                        ch.update(std::slice::from_ref(value)).ok();
                                     }
                                 }
                             }
@@ -1443,14 +1444,14 @@ impl CompiledStateGraph {
             let input_writes = map_input(&[START.to_string()], input);
             for (chan, val) in &input_writes {
                 if let Some(ch) = channels.get(chan) {
-                    ch.update(&[val.clone()]).ok();
+                    ch.update(std::slice::from_ref(val)).ok();
                 }
             }
             if let Some(obj) = input.as_object() {
                 for (key, val) in obj {
                     if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
                         if let Some(ch) = channels.get(key) {
-                            ch.update(&[val.clone()]).ok();
+                            ch.update(std::slice::from_ref(val)).ok();
                         }
                     }
                 }

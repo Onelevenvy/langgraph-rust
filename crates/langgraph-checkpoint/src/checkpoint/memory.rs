@@ -10,15 +10,18 @@ use std::collections::HashMap;
 type StorageKey = (String, String, String); // (thread_id, checkpoint_ns, checkpoint_id)
 type WriteKey = (String, String, String, i64); // (thread_id, checkpoint_ns, checkpoint_id, idx)
 
+/// (thread_id, checkpoint_ns, checkpoint_id) -> (checkpoint_json, metadata_json, parent_checkpoint_id)
+type StorageValue = (JsonValue, JsonValue, Option<String>);
+/// (thread_id, checkpoint_ns, checkpoint_id, idx) -> (task_id, channel, value_json, task_path)
+type WriteValue = (String, String, JsonValue, String);
+
 /// In-memory checkpoint saver for testing and development.
 ///
 /// Stores checkpoints, blobs, and writes in memory using DashMap
 /// for concurrent access.
 pub struct InMemorySaver {
-    // (thread_id, checkpoint_ns, checkpoint_id) -> (checkpoint_json, metadata_json, parent_checkpoint_id)
-    storage: RwLock<HashMap<StorageKey, (JsonValue, JsonValue, Option<String>)>>,
-    // (thread_id, checkpoint_ns, checkpoint_id, idx) -> (task_id, channel, value_json, task_path)
-    writes: RwLock<HashMap<WriteKey, (String, String, JsonValue, String)>>,
+    storage: RwLock<HashMap<StorageKey, StorageValue>>,
+    writes: RwLock<HashMap<WriteKey, WriteValue>>,
 }
 
 impl InMemorySaver {
