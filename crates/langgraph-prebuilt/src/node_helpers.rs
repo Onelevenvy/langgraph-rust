@@ -3,14 +3,14 @@
 //! These utilities eliminate the manual JSON ↔ typed conversion that makes
 //! Rust examples verbose compared to Python's langchain-core.
 
-use std::io::Write;
-use serde_json::Value as JsonValue;
-use tokio_stream::StreamExt;
-use langgraph_checkpoint::config::RunnableConfig;
 use langgraph::config::get_stream_writer;
 use langgraph::runnable::RunnableError;
 use langgraph::stream::StreamPart;
 use langgraph::types::StreamMode;
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
+use std::io::Write;
+use tokio_stream::StreamExt;
 
 use crate::traits::BaseChatModel;
 use crate::types::Message;
@@ -59,8 +59,8 @@ pub fn extract_messages(input: &JsonValue, system_prompt: Option<&str>) -> Vec<M
 ///
 /// Wraps the response message in `{"messages": [response]}` format.
 pub fn llm_response_to_json(response: Message) -> Result<JsonValue, RunnableError> {
-    let response_json = serde_json::to_value(response)
-        .map_err(|e| RunnableError::Node(e.to_string()))?;
+    let response_json =
+        serde_json::to_value(response).map_err(|e| RunnableError::Node(e.to_string()))?;
     Ok(serde_json::json!({ "messages": [response_json] }))
 }
 
@@ -86,7 +86,8 @@ pub fn invoke_llm(
     system_prompt: &str,
 ) -> Result<JsonValue, RunnableError> {
     let messages = extract_messages(input, Some(system_prompt));
-    let response = model.invoke(&messages, &RunnableConfig::new())
+    let response = model
+        .invoke(&messages, &RunnableConfig::new())
         .map_err(|e| RunnableError::Node(e.to_string()))?;
     llm_response_to_json(response)
 }
@@ -101,7 +102,8 @@ pub fn invoke_llm_with_config(
     config: &RunnableConfig,
 ) -> Result<JsonValue, RunnableError> {
     let messages = extract_messages(input, Some(system_prompt));
-    let response = model.invoke(messages.as_slice(), config)
+    let response = model
+        .invoke(messages.as_slice(), config)
         .map_err(|e| RunnableError::Node(e.to_string()))?;
     llm_response_to_json(response)
 }
@@ -195,7 +197,11 @@ pub async fn stream_llm(
     };
 
     if !accumulated_thinking.is_empty() {
-        if let Message::Ai { thinking: ref mut th, .. } = final_message {
+        if let Message::Ai {
+            thinking: ref mut th,
+            ..
+        } = final_message
+        {
             *th = Some(accumulated_thinking);
         }
     }
@@ -382,7 +388,8 @@ pub async fn print_stream_with_options(
                 if let Some(token_type) = part.data.get("type").and_then(|t| t.as_str()) {
                     match token_type {
                         "thinking" if show_thinking => {
-                            if let Some(content) = part.data.get("content").and_then(|c| c.as_str()) {
+                            if let Some(content) = part.data.get("content").and_then(|c| c.as_str())
+                            {
                                 if !in_thinking {
                                     // ANSI dark gray: ESC[2;90m — dim + bright black
                                     // Resets at the end of each thinking block.
@@ -400,7 +407,8 @@ pub async fn print_stream_with_options(
                                 println!();
                                 in_thinking = false;
                             }
-                            if let Some(content) = part.data.get("content").and_then(|c| c.as_str()) {
+                            if let Some(content) = part.data.get("content").and_then(|c| c.as_str())
+                            {
                                 print!("{}", content);
                                 let _ = std::io::stdout().flush();
                                 collected.push_str(content);

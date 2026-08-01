@@ -64,7 +64,11 @@ impl Trace {
     pub fn duration_ms(&self) -> Option<u64> {
         let end = self.end_time.unwrap_or_else(Utc::now);
         let dur = (end - self.start_time).num_milliseconds();
-        if dur < 0 { Some(0) } else { Some(dur as u64) }
+        if dur < 0 {
+            Some(0)
+        } else {
+            Some(dur as u64)
+        }
     }
 
     pub fn finish(&mut self, output: JsonValue, status: TraceStatus) {
@@ -118,7 +122,11 @@ impl Span {
     pub fn duration_ms(&self) -> Option<u64> {
         let end = self.end_time.unwrap_or_else(Utc::now);
         let dur = (end - self.start_time).num_milliseconds();
-        if dur < 0 { Some(0) } else { Some(dur as u64) }
+        if dur < 0 {
+            Some(0)
+        } else {
+            Some(dur as u64)
+        }
     }
 
     pub fn finish(&mut self, output: JsonValue, status: SpanStatus) {

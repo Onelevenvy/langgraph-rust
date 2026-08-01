@@ -1,5 +1,5 @@
-use langgraph::Traceable;
 use langgraph::tracing::{TraceStatus, TracingContext};
+use langgraph::Traceable;
 use serde_json::json;
 
 /// Demo: manually create traces and spans to test the tracing UI.
@@ -37,9 +37,14 @@ async fn create_demo_traces(ctx: &mut TracingContext) {
             json!({"messages": [{"type": "human", "content": "What's the weather in Tokyo?"}]}),
         );
 
-        let llm_span = obs.on_llm_start(&trace_id, None, "gpt-4o", json!([
-            {"role": "user", "content": "What's the weather in Tokyo?"}
-        ]));
+        let llm_span = obs.on_llm_start(
+            &trace_id,
+            None,
+            "gpt-4o",
+            json!([
+                {"role": "user", "content": "What's the weather in Tokyo?"}
+            ]),
+        );
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         obs.on_llm_end(
             &llm_span,
@@ -89,20 +94,31 @@ async fn create_demo_traces(ctx: &mut TracingContext) {
     // Trace 2: A failed graph run
     {
         let obs = ctx.observer();
-        let trace_id = obs.on_graph_start(
-            "data_pipeline",
-            json!({"input": "process dataset"}),
-        );
+        let trace_id = obs.on_graph_start("data_pipeline", json!({"input": "process dataset"}));
 
         let node_span = obs.on_node_start(&trace_id, None, "fetch_data", json!({"source": "api"}));
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         obs.on_node_end(&node_span, &trace_id, json!({"rows": 1000}), true);
 
-        let node_span2 = obs.on_node_start(&trace_id, None, "transform", json!({"operation": "normalize"}));
+        let node_span2 = obs.on_node_start(
+            &trace_id,
+            None,
+            "transform",
+            json!({"operation": "normalize"}),
+        );
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-        obs.on_node_end(&node_span2, &trace_id, json!({"error": "Column 'value' not found"}), false);
+        obs.on_node_end(
+            &node_span2,
+            &trace_id,
+            json!({"error": "Column 'value' not found"}),
+            false,
+        );
 
-        obs.on_graph_end(&trace_id, json!({"error": "Transform failed"}), TraceStatus::Error);
+        obs.on_graph_end(
+            &trace_id,
+            json!({"error": "Transform failed"}),
+            TraceStatus::Error,
+        );
     }
 
     // Trace 3: A simple successful run
@@ -113,9 +129,14 @@ async fn create_demo_traces(ctx: &mut TracingContext) {
             json!({"messages": [{"type": "human", "content": "Hello!"}]}),
         );
 
-        let llm_span = obs.on_llm_start(&trace_id, None, "gpt-4o-mini", json!([
-            {"role": "user", "content": "Hello!"}
-        ]));
+        let llm_span = obs.on_llm_start(
+            &trace_id,
+            None,
+            "gpt-4o-mini",
+            json!([
+                {"role": "user", "content": "Hello!"}
+            ]),
+        );
         tokio::time::sleep(std::time::Duration::from_millis(90)).await;
         obs.on_llm_end(
             &llm_span,

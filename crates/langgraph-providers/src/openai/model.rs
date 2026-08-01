@@ -22,12 +22,8 @@ enum RawContent {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum OpenAIContentBlock {
-    Text {
-        text: String,
-    },
-    ImageUrl {
-        image_url: OpenAIImageUrl,
-    },
+    Text { text: String },
+    ImageUrl { image_url: OpenAIImageUrl },
 }
 
 #[derive(Serialize)]
@@ -49,7 +45,6 @@ struct RawMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
 }
-
 
 #[derive(Serialize, Clone)]
 struct RawToolCall {
@@ -369,10 +364,7 @@ impl OpenAIModel {
                                 .iter()
                                 .enumerate()
                                 .map(|(i, tc)| RawToolCall {
-                                    id: tc
-                                        .id
-                                        .clone()
-                                        .unwrap_or_else(|| format!("call_{}", i)),
+                                    id: tc.id.clone().unwrap_or_else(|| format!("call_{}", i)),
                                     kind: "function".to_string(),
                                     function: RawFunctionCall {
                                         name: tc.name.clone(),
@@ -443,7 +435,6 @@ impl OpenAIModel {
             cache_read_tokens: cached,
         }
     }
-
 }
 
 #[async_trait]
@@ -532,7 +523,9 @@ impl BaseChatModel for OpenAIModel {
             })
             .unwrap_or_default();
 
-        Ok(common::build_ai_message(content, tool_calls, thinking, usage))
+        Ok(common::build_ai_message(
+            content, tool_calls, thinking, usage,
+        ))
     }
 
     fn astream<'a>(

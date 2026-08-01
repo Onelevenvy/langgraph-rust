@@ -1,7 +1,7 @@
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
 
 /// Default channel for state keys. Stores exactly one value.
 ///
@@ -51,10 +51,7 @@ impl Channel for LastValue {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn is_available(&self) -> bool {
@@ -133,10 +130,7 @@ impl Channel for LastValueAfterFinish {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn consume(&self) -> bool {

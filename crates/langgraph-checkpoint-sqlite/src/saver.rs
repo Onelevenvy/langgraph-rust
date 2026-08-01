@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
+};
 use sqlx::Row;
 
 use langgraph_checkpoint::checkpoint::base::{
@@ -69,12 +71,11 @@ impl SqliteSaver {
             .await
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
-        let row: Option<(i64,)> = sqlx::query_as(
-            "SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CheckpointError::Storage(e.to_string()))?;
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         let version = row.map(|(v,)| v).unwrap_or(-1);
 
@@ -128,9 +129,8 @@ impl SqliteSaver {
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         let parent_checkpoint_id: Option<String> = row.try_get("parent_checkpoint_id").ok();
-        let parent_config = parent_checkpoint_id.map(|pid| {
-            Self::make_config(&thread_id, &checkpoint_ns, &pid)
-        });
+        let parent_config =
+            parent_checkpoint_id.map(|pid| Self::make_config(&thread_id, &checkpoint_ns, &pid));
 
         let tuple_config = Self::make_config(&thread_id, &checkpoint_ns, &checkpoint.id);
 
@@ -408,7 +408,11 @@ fn any_to_json(val: Box<dyn std::any::Any>) -> JsonValue {
         JsonValue::String(*val.downcast::<String>().unwrap())
     } else if val.is::<Vec<u8>>() {
         let b = val.downcast::<Vec<u8>>().unwrap();
-        JsonValue::Array(b.into_iter().map(|byte: u8| JsonValue::Number(byte.into())).collect())
+        JsonValue::Array(
+            b.into_iter()
+                .map(|byte: u8| JsonValue::Number(byte.into()))
+                .collect(),
+        )
     } else {
         JsonValue::Null
     }
@@ -546,7 +550,10 @@ impl BaseCheckpointSaver for SqliteSaver {
         let mut checkpoint_value = serde_json::to_value(checkpoint)
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
         if let Some(obj) = checkpoint_value.as_object_mut() {
-            obj.insert("channel_values".to_string(), JsonValue::Object(Default::default()));
+            obj.insert(
+                "channel_values".to_string(),
+                JsonValue::Object(Default::default()),
+            );
         }
         let checkpoint_text = serde_json::to_string(&checkpoint_value)
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
@@ -652,10 +659,7 @@ impl BaseCheckpointSaver for SqliteSaver {
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         for (idx, (_task_id_in_tuple, channel, value)) in writes.iter().enumerate() {
-            let idx_val: i64 = idx_map
-                .get(channel.as_str())
-                .copied()
-                .unwrap_or(idx as i64);
+            let idx_val: i64 = idx_map.get(channel.as_str()).copied().unwrap_or(idx as i64);
 
             let (type_tag, blob) = match self.serde.dumps_typed(value) {
                 Ok(pair) => pair,
@@ -825,8 +829,16 @@ mod tests {
 
         let cfg_with_id = config_with_id("thread-W", &cp.id);
         let writes = vec![
-            ("ch1".to_string(), "task-1".to_string(), serde_json::json!("v1")),
-            ("ch2".to_string(), "task-1".to_string(), serde_json::json!(42)),
+            (
+                "ch1".to_string(),
+                "task-1".to_string(),
+                serde_json::json!("v1"),
+            ),
+            (
+                "ch2".to_string(),
+                "task-1".to_string(),
+                serde_json::json!(42),
+            ),
         ];
         saver
             .aput_writes(&cfg_with_id, writes, "task-1".into(), "".into())
@@ -1071,7 +1083,12 @@ mod tests {
         let cp_clone = cp.clone();
         let vers_clone = vers.clone();
         let put_result = tokio::task::spawn_blocking(move || {
-            s2.put(&cfg2, &cp_clone, &CheckpointMetadata::default(), &vers_clone)
+            s2.put(
+                &cfg2,
+                &cp_clone,
+                &CheckpointMetadata::default(),
+                &vers_clone,
+            )
         })
         .await
         .unwrap();

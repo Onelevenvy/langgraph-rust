@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
 use crate::runnable::{Runnable, RunnableError};
+use async_trait::async_trait;
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 
 /// Sentinel value indicating the input should be passed through unchanged.
 const PASSTHROUGH: &str = "__passthrough__";
@@ -69,7 +69,11 @@ impl ChannelWrite {
 
 #[async_trait]
 impl Runnable for ChannelWrite {
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let _writes = self.assemble_writes(input);
 
         // Store writes in the configurable dict under CONFIG_KEY_SEND
@@ -86,7 +90,11 @@ impl Runnable for ChannelWrite {
         Ok(input.clone())
     }
 
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         self.invoke(input, config)
     }
 

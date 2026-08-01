@@ -1,8 +1,8 @@
-use std::collections::HashSet;
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
+use std::collections::HashSet;
 
 /// Waits until all named values from a set have been received.
 ///
@@ -32,7 +32,9 @@ impl Channel for NamedBarrierValue {
         let seen = self.seen.read();
         if seen.len() >= self.names.len() {
             Some(JsonValue::Array(
-                seen.iter().map(|s: &String| JsonValue::String(s.clone())).collect(),
+                seen.iter()
+                    .map(|s: &String| JsonValue::String(s.clone()))
+                    .collect(),
             ))
         } else {
             None
@@ -41,7 +43,8 @@ impl Channel for NamedBarrierValue {
 
     fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
         let seen = match checkpoint {
-            Some(JsonValue::Array(arr)) => arr.iter()
+            Some(JsonValue::Array(arr)) => arr
+                .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect(),
             _ => HashSet::new(),
@@ -69,7 +72,9 @@ impl Channel for NamedBarrierValue {
         // Check if all names are seen
         if seen.len() >= self.names.len() {
             *self.value.write() = Some(JsonValue::Array(
-                seen.iter().map(|s: &String| JsonValue::String(s.clone())).collect(),
+                seen.iter()
+                    .map(|s: &String| JsonValue::String(s.clone()))
+                    .collect(),
             ));
             Ok(true)
         } else {
@@ -78,10 +83,7 @@ impl Channel for NamedBarrierValue {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn consume(&self) -> bool {
@@ -165,10 +167,7 @@ impl Channel for NamedBarrierValueAfterFinish {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn consume(&self) -> bool {
@@ -182,7 +181,9 @@ impl Channel for NamedBarrierValueAfterFinish {
         let seen = self.seen.read();
         if seen.len() >= self.names.len() {
             *self.value.write() = Some(JsonValue::Array(
-                seen.iter().map(|s: &String| JsonValue::String(s.clone())).collect(),
+                seen.iter()
+                    .map(|s: &String| JsonValue::String(s.clone()))
+                    .collect(),
             ));
             *self.finished.write() = true;
             true

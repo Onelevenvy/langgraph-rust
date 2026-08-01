@@ -3,9 +3,11 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
-use langgraph::prelude::*;
 use langgraph::langgraph_state;
-use langgraph::prebuilt::{ask_json, print_stream, response_text, stream_llm, BaseChatModel, Message};
+use langgraph::prebuilt::{
+    ask_json, print_stream, response_text, stream_llm, BaseChatModel, Message,
+};
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
 
 fn load_openai_config() -> (String, Option<String>, String) {
@@ -130,97 +132,173 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // --- Node: planner (create plan) ---
     let m = model.clone();
-    graph.add_node("planner", move |input: JsonValue, _config: RunnableConfig| {
-        let model = m.clone();
-        async move {
-            let prompt = format!("{}\n\nUser request: {}", CREATE_PLAN_PROMPT, user_message(&input));
-            let plan = ask_json(model.as_ref(), &prompt, "").await?
-                .unwrap_or_else(|| serde_json::json!({"title": "Untitled", "steps": []}));
+    graph.add_node(
+        "planner",
+        move |input: JsonValue, _config: RunnableConfig| {
+            let model = m.clone();
+            async move {
+                let prompt = format!(
+                    "{}\n\nUser request: {}",
+                    CREATE_PLAN_PROMPT,
+                    user_message(&input)
+                );
+                let plan = ask_json(model.as_ref(), &prompt, "")
+                    .await?
+                    .unwrap_or_else(|| serde_json::json!({"title": "Untitled", "steps": []}));
 
-            let step_count = plan.get("steps").and_then(|s| s.as_array()).map(|a| a.len()).unwrap_or(0);
-            println!("[planner] Created plan: {} ({} steps)",
-                plan.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled"), step_count);
-            for (i, step) in plan.get("steps").and_then(|s| s.as_array()).unwrap_or(&vec![]).iter().enumerate() {
-                println!("  {}. {}", i + 1, step.get("description").and_then(|d| d.as_str()).unwrap_or(""));
+                let step_count = plan
+                    .get("steps")
+                    .and_then(|s| s.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!(
+                    "[planner] Created plan: {} ({} steps)",
+                    plan.get("title")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("Untitled"),
+                    step_count
+                );
+                for (i, step) in plan
+                    .get("steps")
+                    .and_then(|s| s.as_array())
+                    .unwrap_or(&vec![])
+                    .iter()
+                    .enumerate()
+                {
+                    println!(
+                        "  {}. {}",
+                        i + 1,
+                        step.get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("")
+                    );
+                }
+
+                Ok(serde_json::json!({"plan": plan}))
             }
-
-            Ok(serde_json::json!({"plan": plan}))
-        }
-    })?;
+        },
+    )?;
 
     // --- Node: executor (execute one step) ---
     let m = model.clone();
-    graph.add_node("executor", move |input: JsonValue, _config: RunnableConfig| {
-        let model = m.clone();
-        async move {
-            let plan = input.get("plan").cloned().unwrap_or_default();
-            let steps = plan.get("steps").and_then(|s| s.as_array()).cloned().unwrap_or_default();
+    graph.add_node(
+        "executor",
+        move |input: JsonValue, _config: RunnableConfig| {
+            let model = m.clone();
+            async move {
+                let plan = input.get("plan").cloned().unwrap_or_default();
+                let steps = plan
+                    .get("steps")
+                    .and_then(|s| s.as_array())
+                    .cloned()
+                    .unwrap_or_default();
 
-            let idx = match steps.iter().position(|s| s.get("status").and_then(|v| v.as_str()) != Some("completed")) {
-                Some(i) => i,
-                None => return Ok(serde_json::json!({"plan": plan})),
-            };
+                let idx = match steps
+                    .iter()
+                    .position(|s| s.get("status").and_then(|v| v.as_str()) != Some("completed"))
+                {
+                    Some(i) => i,
+                    None => return Ok(serde_json::json!({"plan": plan})),
+                };
 
-            let desc = steps[idx].get("description").and_then(|d| d.as_str()).unwrap_or("?");
-            println!("\n[executor] Step {}/{}: {}", idx + 1, steps.len(), desc);
+                let desc = steps[idx]
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("?");
+                println!("\n[executor] Step {}/{}: {}", idx + 1, steps.len(), desc);
 
-            let prompt = format!("{}\n\nCurrent step: {}", EXECUTE_STEP_PROMPT, desc);
-            let exec = ask_json(model.as_ref(), &prompt, "").await?
-                .unwrap_or_else(|| serde_json::json!({"success": false, "result": "Parse error"}));
+                let prompt = format!("{}\n\nCurrent step: {}", EXECUTE_STEP_PROMPT, desc);
+                let exec = ask_json(model.as_ref(), &prompt, "").await?.unwrap_or_else(
+                    || serde_json::json!({"success": false, "result": "Parse error"}),
+                );
 
-            let success = exec.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let step_result = exec.get("result").and_then(|r| r.as_str()).unwrap_or("");
-            if success { println!("[executor] Done: {}", step_result); }
-            else { println!("[executor] Failed: {}", step_result); }
+                let success = exec
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let step_result = exec.get("result").and_then(|r| r.as_str()).unwrap_or("");
+                if success {
+                    println!("[executor] Done: {}", step_result);
+                } else {
+                    println!("[executor] Failed: {}", step_result);
+                }
 
-            // Mark step completed
-            let mut updated_plan = plan;
-            if let Some(steps) = updated_plan.get_mut("steps").and_then(|s| s.as_array_mut()) {
-                if let Some(step) = steps.get_mut(idx) {
-                    if let Some(obj) = step.as_object_mut() {
-                        obj.insert("status".to_string(), serde_json::json!("completed"));
-                        obj.insert("result".to_string(), serde_json::json!(step_result));
+                // Mark step completed
+                let mut updated_plan = plan;
+                if let Some(steps) = updated_plan.get_mut("steps").and_then(|s| s.as_array_mut()) {
+                    if let Some(step) = steps.get_mut(idx) {
+                        if let Some(obj) = step.as_object_mut() {
+                            obj.insert("status".to_string(), serde_json::json!("completed"));
+                            obj.insert("result".to_string(), serde_json::json!(step_result));
+                        }
                     }
                 }
-            }
 
-            Ok(serde_json::json!({"plan": updated_plan}))
-        }
-    })?;
+                Ok(serde_json::json!({"plan": updated_plan}))
+            }
+        },
+    )?;
 
     // --- Node: replanner (update plan after step) ---
     let m = model.clone();
-    graph.add_node("replanner", move |input: JsonValue, _config: RunnableConfig| {
-        let model = m.clone();
-        async move {
-            let plan = input.get("plan").cloned().unwrap_or_default();
-            println!("[replanner] {} steps remaining, updating plan...", pending_steps(&plan));
+    graph.add_node(
+        "replanner",
+        move |input: JsonValue, _config: RunnableConfig| {
+            let model = m.clone();
+            async move {
+                let plan = input.get("plan").cloned().unwrap_or_default();
+                println!(
+                    "[replanner] {} steps remaining, updating plan...",
+                    pending_steps(&plan)
+                );
 
-            let prompt = format!("{}\n\nCurrent plan:\n{}", REPLAN_PROMPT, serde_json::to_string_pretty(&plan).unwrap_or_default());
-            let updated_plan = ask_json(model.as_ref(), &prompt, "").await?
-                .unwrap_or(plan);
+                let prompt = format!(
+                    "{}\n\nCurrent plan:\n{}",
+                    REPLAN_PROMPT,
+                    serde_json::to_string_pretty(&plan).unwrap_or_default()
+                );
+                let updated_plan = ask_json(model.as_ref(), &prompt, "").await?.unwrap_or(plan);
 
-            println!("[replanner] Plan updated, {} steps remaining", pending_steps(&updated_plan));
-            Ok(serde_json::json!({"plan": updated_plan}))
-        }
-    })?;
+                println!(
+                    "[replanner] Plan updated, {} steps remaining",
+                    pending_steps(&updated_plan)
+                );
+                Ok(serde_json::json!({"plan": updated_plan}))
+            }
+        },
+    )?;
 
     // --- Node: summarizer ---
     let m = model.clone();
-    graph.add_node("summarizer", move |input: JsonValue, _config: RunnableConfig| {
-        let model = m.clone();
-        async move {
-            let plan = input.get("plan").cloned().unwrap_or_default();
-            println!("[summarizer] Generating summary...");
+    graph.add_node(
+        "summarizer",
+        move |input: JsonValue, _config: RunnableConfig| {
+            let model = m.clone();
+            async move {
+                let plan = input.get("plan").cloned().unwrap_or_default();
+                println!("[summarizer] Generating summary...");
 
-            let prompt = format!("{}\n\nCompleted plan:\n{}", SUMMARIZE_PROMPT, serde_json::to_string_pretty(&plan).unwrap_or_default());
-            let result = stream_llm(model.as_ref(), &serde_json::json!({"messages": [{"type": "human", "content": prompt}]}), "").await?;
-            let text = response_text(&result);
+                let prompt = format!(
+                    "{}\n\nCompleted plan:\n{}",
+                    SUMMARIZE_PROMPT,
+                    serde_json::to_string_pretty(&plan).unwrap_or_default()
+                );
+                let result = stream_llm(
+                    model.as_ref(),
+                    &serde_json::json!({"messages": [{"type": "human", "content": prompt}]}),
+                    "",
+                )
+                .await?;
+                let text = response_text(&result);
 
-            println!("[summarizer] Done\n=== Summary ===\n{}\n===============", text);
-            Ok(serde_json::json!({"messages": [{"type": "ai", "content": text}]}))
-        }
-    })?;
+                println!(
+                    "[summarizer] Done\n=== Summary ===\n{}\n===============",
+                    text
+                );
+                Ok(serde_json::json!({"messages": [{"type": "ai", "content": text}]}))
+            }
+        },
+    )?;
 
     // --- Edges ---
     graph.add_edge(START, "planner")?;
@@ -240,7 +318,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     println!("User: 规划深圳的3天旅游.\n");
-    let mut stream = app.astream(&input, &RunnableConfig::new(), vec![StreamMode::Custom, StreamMode::Updates]);
+    let mut stream = app.astream(
+        &input,
+        &RunnableConfig::new(),
+        vec![StreamMode::Custom, StreamMode::Updates],
+    );
 
     // Use print_stream helper — replaces ~15 lines of manual token printing
     let _ = print_stream(&mut stream, true).await;
@@ -255,14 +337,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn route_after_executor(input: &JsonValue) -> String {
     let pending = pending_steps(&input.get("plan").cloned().unwrap_or_default());
-    if pending == 0 { return END.to_string(); }
+    if pending == 0 {
+        return END.to_string();
+    }
     println!("[route] {} steps remaining → replanner", pending);
     "replanner".to_string()
 }
 
 fn route_after_replanner(input: &JsonValue) -> String {
     let pending = pending_steps(&input.get("plan").cloned().unwrap_or_default());
-    if pending == 0 { return "summarizer".to_string(); }
+    if pending == 0 {
+        return "summarizer".to_string();
+    }
     println!("[route] {} steps remaining → executor", pending);
     "executor".to_string()
 }

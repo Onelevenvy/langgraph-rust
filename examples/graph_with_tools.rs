@@ -3,14 +3,12 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
-use langgraph::prelude::*;
-use langgraph::{langgraph_state, tool};
 use langgraph::prebuilt::{
-    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message,
-    ToolNode,
+    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message, ToolNode,
 };
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
-
+use langgraph::{langgraph_state, tool};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -128,9 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 4: Invoke with streaming
     // -------------------------------------------------------
 
-    let tests = [("Multiply 3 and 4.", 0_i64),
+    let tests = [
+        ("Multiply 3 and 4.", 0_i64),
         ("Add 5 and 7.", 0),
-        ("Divide 100 by 3.", 0)];
+        ("Divide 100 by 3.", 0),
+    ];
 
     for (i, (question, _)) in tests.iter().enumerate() {
         println!("--- Test {}: {} ---\n", i + 1, question);

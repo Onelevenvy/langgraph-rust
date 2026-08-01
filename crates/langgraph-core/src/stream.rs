@@ -1,6 +1,6 @@
+use crate::types::StreamMode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use crate::types::StreamMode;
 
 /// A single chunk emitted by the graph's streaming interface (v2 format).
 ///
@@ -18,30 +18,58 @@ pub struct StreamPart {
 
 impl StreamPart {
     pub fn values(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Values, ns, data }
+        Self {
+            mode: StreamMode::Values,
+            ns,
+            data,
+        }
     }
 
     pub fn updates(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Updates, ns, data }
+        Self {
+            mode: StreamMode::Updates,
+            ns,
+            data,
+        }
     }
 
     pub fn messages(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Messages, ns, data }
+        Self {
+            mode: StreamMode::Messages,
+            ns,
+            data,
+        }
     }
 
     pub fn custom(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Custom, ns, data }
+        Self {
+            mode: StreamMode::Custom,
+            ns,
+            data,
+        }
     }
 
     pub fn tasks(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Tasks, ns, data }
+        Self {
+            mode: StreamMode::Tasks,
+            ns,
+            data,
+        }
     }
 
     pub fn checkpoints(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Checkpoints, ns, data }
+        Self {
+            mode: StreamMode::Checkpoints,
+            ns,
+            data,
+        }
     }
 
     pub fn debug(ns: Vec<String>, data: JsonValue) -> Self {
-        Self { mode: StreamMode::Debug, ns, data }
+        Self {
+            mode: StreamMode::Debug,
+            ns,
+            data,
+        }
     }
 }

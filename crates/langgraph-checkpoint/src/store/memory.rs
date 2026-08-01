@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-use parking_lot::RwLock;
-use serde_json::Value as JsonValue;
+use super::base::*;
+use crate::error::StoreError;
 use async_trait::async_trait;
 use chrono::Utc;
-use crate::error::StoreError;
-use super::base::*;
+use parking_lot::RwLock;
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// In-memory store implementation.
 pub struct InMemoryStore {
@@ -40,24 +40,28 @@ impl InMemoryStore {
                 if condition.path.len() > namespace.len() {
                     return false;
                 }
-                condition.path.iter().zip(namespace.iter()).all(|(seg, ns)| {
-                    match seg {
+                condition
+                    .path
+                    .iter()
+                    .zip(namespace.iter())
+                    .all(|(seg, ns)| match seg {
                         NamespacePathSegment::Literal(s) => s == ns,
                         NamespacePathSegment::Wildcard => true,
-                    }
-                })
+                    })
             }
             NamespaceMatchType::Suffix => {
                 if condition.path.len() > namespace.len() {
                     return false;
                 }
                 let offset = namespace.len() - condition.path.len();
-                condition.path.iter().zip(namespace[offset..].iter()).all(|(seg, ns)| {
-                    match seg {
+                condition
+                    .path
+                    .iter()
+                    .zip(namespace[offset..].iter())
+                    .all(|(seg, ns)| match seg {
                         NamespacePathSegment::Literal(s) => s == ns,
                         NamespacePathSegment::Wildcard => true,
-                    }
-                })
+                    })
             }
         }
     }
@@ -67,26 +71,42 @@ impl InMemoryStore {
             JsonValue::Object(obj) => {
                 for (op, expected) in obj {
                     match op.as_str() {
-                        "$eq" => { if item_value != expected { return false; } }
-                        "$ne" => { if item_value == expected { return false; } }
+                        "$eq" => {
+                            if item_value != expected {
+                                return false;
+                            }
+                        }
+                        "$ne" => {
+                            if item_value == expected {
+                                return false;
+                            }
+                        }
                         "$gt" => {
                             if let (Some(a), Some(b)) = (item_value.as_f64(), expected.as_f64()) {
-                                if a <= b { return false; }
+                                if a <= b {
+                                    return false;
+                                }
                             }
                         }
                         "$gte" => {
                             if let (Some(a), Some(b)) = (item_value.as_f64(), expected.as_f64()) {
-                                if a < b { return false; }
+                                if a < b {
+                                    return false;
+                                }
                             }
                         }
                         "$lt" => {
                             if let (Some(a), Some(b)) = (item_value.as_f64(), expected.as_f64()) {
-                                if a >= b { return false; }
+                                if a >= b {
+                                    return false;
+                                }
                             }
                         }
                         "$lte" => {
                             if let (Some(a), Some(b)) = (item_value.as_f64(), expected.as_f64()) {
-                                if a > b { return false; }
+                                if a > b {
+                                    return false;
+                                }
                             }
                         }
                         _ => {}
@@ -114,7 +134,8 @@ impl BaseStore for InMemoryStore {
             match op {
                 Op::Get(get_op) => {
                     let data = self.data.read();
-                    let item = data.get(&get_op.namespace)
+                    let item = data
+                        .get(&get_op.namespace)
                         .and_then(|ns| ns.get(&get_op.key))
                         .cloned();
                     results.push(StoreResult::Item(item));
@@ -127,7 +148,9 @@ impl BaseStore for InMemoryStore {
                         if search_op.namespace_prefix.len() > ns.len() {
                             continue;
                         }
-                        let prefix_match = search_op.namespace_prefix.iter()
+                        let prefix_match = search_op
+                            .namespace_prefix
+                            .iter()
                             .zip(ns.iter())
                             .all(|(a, b)| a == b);
                         if !prefix_match {
@@ -145,7 +168,10 @@ impl BaseStore for InMemoryStore {
                                                 break;
                                             }
                                         }
-                                        None => { matches = false; break; }
+                                        None => {
+                                            matches = false;
+                                            break;
+                                        }
                                     }
                                 }
                                 if !matches {
@@ -176,7 +202,8 @@ impl BaseStore for InMemoryStore {
                             value: value.clone(),
                             key: put_op.key.clone(),
                             namespace: put_op.namespace.clone(),
-                            created_at: data.get(&put_op.namespace)
+                            created_at: data
+                                .get(&put_op.namespace)
                                 .and_then(|ns| ns.get(&put_op.key))
                                 .map(|item| item.created_at)
                                 .unwrap_or(now),
@@ -197,9 +224,8 @@ impl BaseStore for InMemoryStore {
                     let mut namespaces: Vec<Vec<String>> = data.keys().cloned().collect();
 
                     if let Some(ref conditions) = list_op.match_conditions {
-                        namespaces.retain(|ns| {
-                            conditions.iter().all(|cond| Self::does_match(cond, ns))
-                        });
+                        namespaces
+                            .retain(|ns| conditions.iter().all(|cond| Self::does_match(cond, ns)));
                     }
 
                     if let Some(depth) = list_op.max_depth {
@@ -236,7 +262,15 @@ mod tests {
     #[test]
     fn test_put_and_get() {
         let store = InMemoryStore::new(None);
-        store.put(&["users", "1"], "profile", json!({"name": "Alice"}), PutIndex::Default, None).unwrap();
+        store
+            .put(
+                &["users", "1"],
+                "profile",
+                json!({"name": "Alice"}),
+                PutIndex::Default,
+                None,
+            )
+            .unwrap();
 
         let item = store.get(&["users", "1"], "profile", None).unwrap();
         assert!(item.is_some());
@@ -246,7 +280,15 @@ mod tests {
     #[test]
     fn test_delete() {
         let store = InMemoryStore::new(None);
-        store.put(&["users", "1"], "profile", json!({"name": "Alice"}), PutIndex::Default, None).unwrap();
+        store
+            .put(
+                &["users", "1"],
+                "profile",
+                json!({"name": "Alice"}),
+                PutIndex::Default,
+                None,
+            )
+            .unwrap();
         store.delete(&["users", "1"], "profile").unwrap();
 
         let item = store.get(&["users", "1"], "profile", None).unwrap();
@@ -256,13 +298,31 @@ mod tests {
     #[test]
     fn test_search_with_filter() {
         let store = InMemoryStore::new(None);
-        store.put(&["users"], "alice", json!({"age": 30, "name": "Alice"}), PutIndex::Default, None).unwrap();
-        store.put(&["users"], "bob", json!({"age": 25, "name": "Bob"}), PutIndex::Default, None).unwrap();
+        store
+            .put(
+                &["users"],
+                "alice",
+                json!({"age": 30, "name": "Alice"}),
+                PutIndex::Default,
+                None,
+            )
+            .unwrap();
+        store
+            .put(
+                &["users"],
+                "bob",
+                json!({"age": 25, "name": "Bob"}),
+                PutIndex::Default,
+                None,
+            )
+            .unwrap();
 
         let mut filter = HashMap::new();
         filter.insert("age".to_string(), json!({"$gte": 28}));
 
-        let results = store.search(&["users"], None, Some(&filter), 10, 0, None).unwrap();
+        let results = store
+            .search(&["users"], None, Some(&filter), 10, 0, None)
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key, "alice");
     }

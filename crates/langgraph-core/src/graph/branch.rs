@@ -1,6 +1,6 @@
+use crate::runnable::Runnable;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::runnable::Runnable;
 
 /// Specification for a conditional edge (branch).
 ///

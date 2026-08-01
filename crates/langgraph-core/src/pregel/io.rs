@@ -1,24 +1,19 @@
-use std::collections::HashMap;
-use serde_json::Value as JsonValue;
 use crate::channels::Channel;
-use crate::constants::{START, RESUME, TASKS};
+use crate::constants::{RESUME, START, TASKS};
 use crate::types::{Command, CommandGoto};
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// Map user input to channel writes.
 ///
 /// If input is an object, each key maps to a channel.
 /// Otherwise, writes the entire value to each input channel.
-pub fn map_input(
-    input_channels: &[String],
-    input: &JsonValue,
-) -> Vec<(String, JsonValue)> {
+pub fn map_input(input_channels: &[String], input: &JsonValue) -> Vec<(String, JsonValue)> {
     if let Some(obj) = input.as_object() {
         // Dict input — map matching keys to channels
         input_channels
             .iter()
-            .filter_map(|ch| {
-                obj.get(ch).map(|v| (ch.clone(), v.clone()))
-            })
+            .filter_map(|ch| obj.get(ch).map(|v| (ch.clone(), v.clone())))
             .collect()
     } else {
         // Non-object input — write to all channels
@@ -107,22 +102,14 @@ pub fn map_command(cmd: &Command) -> Vec<(String, String, JsonValue)> {
 
     // Handle resume
     if let Some(ref resume) = cmd.resume {
-        writes.push((
-            NULL_TASK_ID.to_string(),
-            RESUME.to_string(),
-            resume.clone(),
-        ));
+        writes.push((NULL_TASK_ID.to_string(), RESUME.to_string(), resume.clone()));
     }
 
     // Handle update
     if let Some(ref update) = cmd.update {
         if let Some(obj) = update.as_object() {
             for (k, v) in obj {
-                writes.push((
-                    NULL_TASK_ID.to_string(),
-                    k.clone(),
-                    v.clone(),
-                ));
+                writes.push((NULL_TASK_ID.to_string(), k.clone(), v.clone()));
             }
         }
     }

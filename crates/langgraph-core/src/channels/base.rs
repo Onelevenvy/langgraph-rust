@@ -1,5 +1,5 @@
-use serde_json::Value as JsonValue;
 use langgraph_checkpoint::error::ChannelError;
+use serde_json::Value as JsonValue;
 
 /// The erased channel trait. All channel types implement this.
 ///

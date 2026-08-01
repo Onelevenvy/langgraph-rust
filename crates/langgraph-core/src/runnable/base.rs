@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
 use crate::types::GraphInterrupt;
+use async_trait::async_trait;
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 
 /// Core Runnable trait — the universal execution abstraction.
 ///
@@ -10,10 +10,18 @@ use crate::types::GraphInterrupt;
 #[async_trait]
 pub trait Runnable: Send + Sync {
     /// Execute synchronously.
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError>;
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError>;
 
     /// Execute asynchronously.
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError>;
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError>;
 
     /// Human-readable name for tracing/debugging.
     fn name(&self) -> &str {

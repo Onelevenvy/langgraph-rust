@@ -1,13 +1,13 @@
-use langgraph::prelude::*;
 use langgraph::langgraph_state;
 use langgraph::prebuilt::Message;
+use langgraph::prelude::*;
 
 #[langgraph_state]
 #[derive(Debug)]
 struct AgentState {
     #[channel(messages)]
     messages: Vec<Message>,
-    step_count: i64,  // defaults to LastValue
+    step_count: i64, // defaults to LastValue
 }
 
 /// Agent node: generates a response and increments step count.
@@ -39,10 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compiled = graph.compile()?;
 
     // Invoke
-    let result = compiled.ainvoke(
-        &serde_json::json!({"step_count": 0}),
-        &RunnableConfig::new(),
-    ).await?;
+    let result = compiled
+        .ainvoke(
+            &serde_json::json!({"step_count": 0}),
+            &RunnableConfig::new(),
+        )
+        .await?;
 
     println!("Result:");
     println!("{}", serde_json::to_string_pretty(&result)?);

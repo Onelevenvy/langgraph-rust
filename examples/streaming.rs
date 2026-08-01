@@ -5,11 +5,12 @@ use tokio_stream::StreamExt;
 
 use dotenvy::dotenv;
 use langgraph::config::get_stream_writer;
+use langgraph::prebuilt::{
+    prepare_tools, stream_llm, tools_condition, BaseChatModel, Message, ToolNode,
+};
 use langgraph::prelude::*;
-use langgraph::{langgraph_state, tool};
-use langgraph::prebuilt::{prepare_tools, stream_llm, tools_condition, BaseChatModel, Message, ToolNode};
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
-
+use langgraph::{langgraph_state, tool};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();

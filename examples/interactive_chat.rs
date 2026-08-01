@@ -4,14 +4,13 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
-use langgraph::prelude::*;
 use langgraph::checkpoint::InMemorySaver;
-use langgraph::{langgraph_state, tool};
 use langgraph::prebuilt::{
-    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message,
-    ToolNode,
+    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message, ToolNode,
 };
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::{langgraph_state, tool};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -95,17 +94,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut graph = StateGraph::new(channels);
 
     let model_clone = model_with_tools.clone();
-    graph.add_node("llm_call", move |input: JsonValue, _config: RunnableConfig| {
-        let model = model_clone.clone();
-        async move {
-            stream_llm(
-                model.as_ref(),
-                &input,
-                "You are a math assistant.",
-            )
-            .await
-        }
-    })?;
+    graph.add_node(
+        "llm_call",
+        move |input: JsonValue, _config: RunnableConfig| {
+            let model = model_clone.clone();
+            async move { stream_llm(model.as_ref(), &input, "You are a math assistant.").await }
+        },
+    )?;
 
     let tools_node: Arc<dyn Runnable> = Arc::new(ToolNode::new(prepared.tools.clone()));
     graph.add_node("tool_node", tools_node)?;

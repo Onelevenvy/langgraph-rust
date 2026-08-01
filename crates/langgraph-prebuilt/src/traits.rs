@@ -1,15 +1,16 @@
-use std::pin::Pin;
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
-use langgraph::types::{GraphInterrupt, InterruptError};
 use crate::types::Message;
+use async_trait::async_trait;
+use langgraph::types::{GraphInterrupt, InterruptError};
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
+use std::pin::Pin;
 
 /// A stream of message chunks from a chat model.
 ///
 /// Each item is a `Message` representing either a partial token chunk
 /// (for real-time display) or the final complete message.
-pub type MessageStream<'a> = Pin<Box<dyn tokio_stream::Stream<Item = Result<Message, ModelError>> + Send + 'a>>;
+pub type MessageStream<'a> =
+    Pin<Box<dyn tokio_stream::Stream<Item = Result<Message, ModelError>> + Send + 'a>>;
 
 /// Token usage information from an LLM API response.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -98,7 +99,11 @@ pub trait BaseTool: Send + Sync {
     ///
     /// Sets up thread-local config/runtime context so that `get_config()` and
     /// `get_runtime()` work inside sync tool code (needed by `interrupt()`).
-    async fn ainvoke(&self, args: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, ToolError> {
+    async fn ainvoke(
+        &self,
+        args: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, ToolError> {
         let args = args.clone();
         let config = config.clone();
         // Capture runtime from async task-locals if available
@@ -151,7 +156,11 @@ pub trait BaseChatModel: Send + Sync {
     fn invoke(&self, messages: &[Message], config: &RunnableConfig) -> Result<Message, ModelError>;
 
     /// Invoke the model asynchronously. Default delegates to sync invoke via block_in_place.
-    async fn ainvoke(&self, messages: &[Message], config: &RunnableConfig) -> Result<Message, ModelError> {
+    async fn ainvoke(
+        &self,
+        messages: &[Message],
+        config: &RunnableConfig,
+    ) -> Result<Message, ModelError> {
         let messages = messages.to_vec();
         let config = config.clone();
         tokio::task::block_in_place(|| self.invoke(&messages, &config))
@@ -194,7 +203,11 @@ impl BaseChatModel for Box<dyn BaseChatModel> {
         (**self).invoke(messages, config)
     }
 
-    async fn ainvoke(&self, messages: &[Message], config: &RunnableConfig) -> Result<Message, ModelError> {
+    async fn ainvoke(
+        &self,
+        messages: &[Message],
+        config: &RunnableConfig,
+    ) -> Result<Message, ModelError> {
         (**self).ainvoke(messages, config).await
     }
 
@@ -308,14 +321,14 @@ mod tests {
 
     #[test]
     fn test_closure_tool() {
-        let tool = ClosureTool::new("echo", "Echoes the input", |args| {
-            Ok(args.clone())
-        });
+        let tool = ClosureTool::new("echo", "Echoes the input", |args| Ok(args.clone()));
 
         assert_eq!(tool.name(), "echo");
         assert_eq!(tool.description(), "Echoes the input");
 
-        let result = tool.invoke(&serde_json::json!("hello"), &RunnableConfig::new()).unwrap();
+        let result = tool
+            .invoke(&serde_json::json!("hello"), &RunnableConfig::new())
+            .unwrap();
         assert_eq!(result, serde_json::json!("hello"));
     }
 }

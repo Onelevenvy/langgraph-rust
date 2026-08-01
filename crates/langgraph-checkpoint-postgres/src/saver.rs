@@ -6,7 +6,9 @@ use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::Row;
 
-use langgraph_checkpoint::checkpoint::base::{get_checkpoint_id, writes_idx_map, BaseCheckpointSaver};
+use langgraph_checkpoint::checkpoint::base::{
+    get_checkpoint_id, writes_idx_map, BaseCheckpointSaver,
+};
 use langgraph_checkpoint::checkpoint::types::*;
 use langgraph_checkpoint::config::RunnableConfig;
 use langgraph_checkpoint::error::CheckpointError;
@@ -19,7 +21,17 @@ use crate::queries::*;
 type BlobRow = (String, String, String, String, String, Option<Vec<u8>>);
 
 /// Write row: (thread_id, checkpoint_ns, checkpoint_id, task_id, task_path, idx, channel, type_tag, blob)
-type WriteRow = (String, String, String, String, String, i32, String, String, Vec<u8>);
+type WriteRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    String,
+    String,
+    Vec<u8>,
+);
 
 /// Helper: create a RunnableConfig from a JSON value.
 fn config_from_json(val: serde_json::Value) -> RunnableConfig {
@@ -35,7 +47,11 @@ fn any_to_json(val: Box<dyn std::any::Any + Send + Sync>) -> JsonValue {
         JsonValue::String(*val.downcast::<String>().unwrap())
     } else if val.is::<Vec<u8>>() {
         let b = val.downcast::<Vec<u8>>().unwrap();
-        JsonValue::Array(b.into_iter().map(|byte: u8| JsonValue::Number(byte.into())).collect())
+        JsonValue::Array(
+            b.into_iter()
+                .map(|byte: u8| JsonValue::Number(byte.into()))
+                .collect(),
+        )
     } else {
         // () and unknown types both map to Null
         JsonValue::Null
@@ -79,12 +95,11 @@ impl PostgresSaver {
             .await
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
-        let row: Option<(i32,)> = sqlx::query_as(
-            "SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| CheckpointError::Storage(e.to_string()))?;
+        let row: Option<(i32,)> =
+            sqlx::query_as("SELECT v FROM checkpoint_migrations ORDER BY v DESC LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         let version = row.map(|(v,)| v).unwrap_or(-1);
 
@@ -220,10 +235,7 @@ impl PostgresSaver {
             .iter()
             .enumerate()
             .filter_map(|(idx, (_task_id, channel, value))| {
-                let idx_val = idx_map
-                    .get(channel.as_str())
-                    .copied()
-                    .unwrap_or(idx as i64) as i32;
+                let idx_val = idx_map.get(channel.as_str()).copied().unwrap_or(idx as i64) as i32;
                 if let Ok((type_tag, blob)) = self.serde.dumps_typed(value) {
                     Some((
                         thread_id.to_string(),
@@ -453,8 +465,8 @@ impl BaseCheckpointSaver for PostgresSaver {
 
         let checkpoint_json = serde_json::to_value(checkpoint)
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-        let metadata_json = serde_json::to_value(metadata)
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
+        let metadata_json =
+            serde_json::to_value(metadata).map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         // Upsert blobs
         let blobs = self.dump_blobs(

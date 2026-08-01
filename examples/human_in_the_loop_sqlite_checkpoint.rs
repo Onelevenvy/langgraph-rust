@@ -1,11 +1,11 @@
 use dotenvy::dotenv;
-use langgraph::prelude::*;
-use langgraph::sqlite::SqliteSaver;
-use langgraph::{langgraph_state, tool};
 use langgraph::prebuilt::{
     invoke_llm, prepare_tools, tools_condition, BaseChatModel, Message, ToolError, ToolNode,
 };
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::sqlite::SqliteSaver;
+use langgraph::{langgraph_state, tool};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -14,7 +14,8 @@ fn load_openai_config() -> (String, Option<String>, String) {
     let api_key =
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set in .env or environment");
     let api_base = std::env::var("OPENAI_API_BASE").ok();
-    let model_name = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "Pro/deepseek-ai/DeepSeek-V3.2".to_string());
+    let model_name = std::env::var("OPENAI_MODEL")
+        .unwrap_or_else(|_| "Pro/deepseek-ai/DeepSeek-V3.2".to_string());
 
     (api_key, api_base, model_name)
 }
@@ -117,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Compile with checkpointer
     let saver = SqliteSaver::from_conn_string("sqlite:checkpoints.db").await?;
-    saver.setup().await?; 
+    saver.setup().await?;
     let checkpointer = Arc::new(saver);
     let app = graph.compile_builder().checkpointer(checkpointer).build()?;
 
@@ -174,7 +175,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     // Check if a Tool message exists in the conversation history
                     let has_used_tool = messages_array.iter().any(|m| {
-                        matches!(serde_json::from_value::<Message>(m.clone()), Ok(Message::Tool { .. }))
+                        matches!(
+                            serde_json::from_value::<Message>(m.clone()),
+                            Ok(Message::Tool { .. })
+                        )
                     });
 
                     if has_used_tool {
@@ -183,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         println!("\n[System 🤖] -> The model asked a clarifying question without calling the tool.");
                         println!("[System 🤖] -> Automatically simulating the user to provide a follow-up answer...");
-                        
+
                         // Provide a follow-up answer forcing the model to use the tool
                         current_input = serde_json::json!({
                             "messages": [{
@@ -197,18 +201,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Since 'human_assistance' uses interrupt(), the graph is currently paused.
                     println!("\n[System 🤖] -> The model invoked a tool! Graph execution is paused (Interrupt).");
                     println!("[System 🤖] -> Automatically simulating the human expert to inject the response via Command::resume...");
-                    
+
                     // Inject data using Command::resume to unpause the graph
                     let resume_command = Command::resume(serde_json::json!({
                         "data": "Expert advice: Use LangGraph-Rust for state machine orchestration and keep your tools modular!"
                     }));
                     current_input = serde_json::to_value(&resume_command)?;
                 }
-            },
+            }
             Message::Tool { .. } => {
                 // If the last message is unexpectedly a Tool message, continue with null input
                 current_input = serde_json::json!(null);
-            },
+            }
             _ => {
                 println!("\n[System 🤖] -> Unexpected graph state encountered. Terminating.");
                 break;
@@ -220,7 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n[System 🤖] -> Maximum iteration limit (10) reached. Terminating to prevent infinite loop.");
             break;
         }
-        
+
         println!("\n"); // Padding between steps
     }
 

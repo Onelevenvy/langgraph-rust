@@ -13,15 +13,13 @@
 ///   worker_b → END
 ///   output   → END
 ///
-
 use std::sync::Arc;
-
 
 use serde_json::{json, Value as JsonValue};
 
-use langgraph::prelude::*;
 use langgraph::checkpoint::InMemorySaver;
 use langgraph::langgraph_state;
+use langgraph::prelude::*;
 
 // ── State ─────────────────────────────────────────────────────────────────
 
@@ -36,20 +34,29 @@ struct PipelineState {
 
 // ── Nodes ──────────────────────────────────────────────────────────────────
 
-async fn entry_node(_input: JsonValue, _config: RunnableConfig) -> Result<JsonValue, RunnableError> {
+async fn entry_node(
+    _input: JsonValue,
+    _config: RunnableConfig,
+) -> Result<JsonValue, RunnableError> {
     println!("[entry] running");
     Ok(json!({ "log": ["entry ran"] }))
 }
 
 /// Worker A: completes immediately in the same super-step as worker_b.
 /// Its branch:to:output trigger write must survive the interrupt checkpoint.
-async fn worker_a_node(_input: JsonValue, _config: RunnableConfig) -> Result<JsonValue, RunnableError> {
+async fn worker_a_node(
+    _input: JsonValue,
+    _config: RunnableConfig,
+) -> Result<JsonValue, RunnableError> {
     println!("[worker_a] completed → writing state + downstream trigger");
     Ok(json!({ "log": ["worker_a done"] }))
 }
 
 /// Worker B: interrupts in the same super-step as worker_a.
-async fn worker_b_node(_input: JsonValue, _config: RunnableConfig) -> Result<JsonValue, RunnableError> {
+async fn worker_b_node(
+    _input: JsonValue,
+    _config: RunnableConfig,
+) -> Result<JsonValue, RunnableError> {
     println!("[worker_b] calling interrupt() ...");
     let review = interrupt(json!({
         "question": "Please review and provide input."
@@ -70,7 +77,10 @@ async fn worker_b_node(_input: JsonValue, _config: RunnableConfig) -> Result<Jso
 
 /// Output node: triggered only by worker_a's edge.
 
-async fn output_node(_input: JsonValue, _config: RunnableConfig) -> Result<JsonValue, RunnableError> {
+async fn output_node(
+    _input: JsonValue,
+    _config: RunnableConfig,
+) -> Result<JsonValue, RunnableError> {
     println!("[output] running! ");
     Ok(json!({
         "log": ["output ran"],
@@ -101,25 +111,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = PipelineState::create_channels();
     let mut graph = StateGraph::new(channels);
 
-    graph.add_node("entry",    entry_node)?;
+    graph.add_node("entry", entry_node)?;
     graph.add_node("worker_a", worker_a_node)?;
     graph.add_node("worker_b", worker_b_node)?;
-    graph.add_node("output",   output_node)?;
+    graph.add_node("output", output_node)?;
 
     graph.add_edge(START, "entry")?;
     // entry fans out — both workers triggered in the SAME super-step
     graph.add_edge("entry", "worker_a")?;
     graph.add_edge("entry", "worker_b")?;
-   
+
     graph.add_edge("worker_a", "output")?;
     graph.add_edge("worker_b", END)?;
     graph.add_edge("output", END)?;
 
     let checkpointer = Arc::new(InMemorySaver::new());
-    let compiled = graph
-        .compile_builder()
-        .checkpointer(checkpointer)
-        .build()?;
+    let compiled = graph.compile_builder().checkpointer(checkpointer).build()?;
 
     let mut config = RunnableConfig::new();
     config.insert(
@@ -145,7 +152,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Graph must be paused (worker_b interrupted, possibly worker_a also pending)
     assert!(
         !snapshot.next.is_empty(),
-        "Graph should be paused, but next is empty: {:?}", snapshot.next
+        "Graph should be paused, but next is empty: {:?}",
+        snapshot.next
     );
 
     // Depending on task order:
@@ -158,8 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // In BOTH cases, after resume output must run.
 
-    let log_now = snapshot.values["log"].as_array().cloned().unwrap_or_default();
-    if log_now.iter().any(|v| v.as_str().map(|s| s.contains("worker_a")).unwrap_or(false)) {
+    let log_now = snapshot.values["log"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if log_now
+        .iter()
+        .any(|v| v.as_str().map(|s| s.contains("worker_a")).unwrap_or(false))
+    {
         println!("ℹ worker_a completed in the same super-step as worker_b's interrupt.");
         println!("  This is the direct Bug  scenario.");
         println!("  Verifying worker_a's writes survived the interrupt checkpoint...");
@@ -194,10 +208,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Final log: {:?}", final_log);
     println!();
 
-    let has_entry    = final_log.iter().any(|v| v.as_str().map(|s| s.contains("entry")).unwrap_or(false));
-    let has_worker_a = final_log.iter().any(|v| v.as_str().map(|s| s.contains("worker_a")).unwrap_or(false));
-    let has_worker_b = final_log.iter().any(|v| v.as_str().map(|s| s.contains("worker_b")).unwrap_or(false));
-    let has_output   = final_log.iter().any(|v| v.as_str().map(|s| s == "output ran").unwrap_or(false));
+    let has_entry = final_log
+        .iter()
+        .any(|v| v.as_str().map(|s| s.contains("entry")).unwrap_or(false));
+    let has_worker_a = final_log
+        .iter()
+        .any(|v| v.as_str().map(|s| s.contains("worker_a")).unwrap_or(false));
+    let has_worker_b = final_log
+        .iter()
+        .any(|v| v.as_str().map(|s| s.contains("worker_b")).unwrap_or(false));
+    let has_output = final_log
+        .iter()
+        .any(|v| v.as_str().map(|s| s == "output ran").unwrap_or(false));
 
     println!("Assertions:");
     assert!(has_entry, "FAIL: entry missing from final log");

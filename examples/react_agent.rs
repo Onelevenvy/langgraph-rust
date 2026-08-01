@@ -1,8 +1,8 @@
 use dotenvy::dotenv;
-use langgraph::prelude::RunnableConfig;
-use langgraph::tool;
 use langgraph::prebuilt::{create_react_agent, prepare_tools, print_result, ReActAgentConfig};
+use langgraph::prelude::RunnableConfig;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::tool;
 
 use std::sync::Arc;
 
@@ -138,4 +138,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-

@@ -1,7 +1,7 @@
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
 
 /// A channel that stores the most recent value, allowing multiple updates.
 /// Unlike LastValue, this does NOT error on multiple updates - it just keeps the last one.
@@ -43,10 +43,7 @@ impl Channel for AnyValue {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn is_available(&self) -> bool {

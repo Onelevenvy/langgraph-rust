@@ -1,10 +1,10 @@
+use super::base::{Runnable, RunnableError};
+use async_trait::async_trait;
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
-use super::base::{Runnable, RunnableError};
 
 /// A clonable async function: (input, config) -> future(result).
 ///
@@ -44,7 +44,10 @@ impl RunnableCallable {
     /// Create from a sync function (wrapped as async).
     pub fn new_sync<F>(name: impl Into<String>, f: F) -> Self
     where
-        F: Fn(&JsonValue, &RunnableConfig) -> Result<JsonValue, RunnableError> + Send + Sync + 'static,
+        F: Fn(&JsonValue, &RunnableConfig) -> Result<JsonValue, RunnableError>
+            + Send
+            + Sync
+            + 'static,
     {
         let f = Arc::new(f);
         Self {
@@ -59,21 +62,32 @@ impl RunnableCallable {
 
 #[async_trait]
 impl Runnable for RunnableCallable {
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let func = self.func.clone();
         let input = input.clone();
         let config = config.clone();
 
         // Try to use existing tokio runtime, otherwise create one
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(crate::config::with_config(config.clone(), func(input, config))),
+            Ok(handle) => handle.block_on(crate::config::with_config(
+                config.clone(),
+                func(input, config),
+            )),
             Err(_) => tokio::runtime::Runtime::new()
                 .unwrap()
                 .block_on(func(input, config)),
         }
     }
 
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let func = self.func.clone();
         let input = input.clone();
         let config_inner = config.clone();

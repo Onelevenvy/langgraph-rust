@@ -32,7 +32,8 @@ impl TracingGraphObserver {
 
         let summary = TraceSummary::from(&trace);
         self.store.create_trace(trace);
-        self.event_bus.publish(TracingEvent::TraceCreated { trace: summary });
+        self.event_bus
+            .publish(TracingEvent::TraceCreated { trace: summary });
 
         self.current_trace_id = Some(trace_id.clone());
         trace_id
@@ -44,7 +45,8 @@ impl TracingGraphObserver {
             detail.trace.finish(output, status);
             let summary = TraceSummary::from(&detail.trace);
             self.store.update_trace(detail.trace);
-            self.event_bus.publish(TracingEvent::TraceUpdated { trace: summary });
+            self.event_bus
+                .publish(TracingEvent::TraceUpdated { trace: summary });
         }
     }
 
@@ -75,7 +77,11 @@ impl TracingGraphObserver {
     pub fn on_node_end(&self, span_id: &str, trace_id: &str, output: JsonValue, success: bool) {
         if let Some(detail) = self.store.get_trace(trace_id) {
             if let Some(mut span) = detail.spans.into_iter().find(|s| s.id == span_id) {
-                let status = if success { SpanStatus::Success } else { SpanStatus::Error };
+                let status = if success {
+                    SpanStatus::Success
+                } else {
+                    SpanStatus::Error
+                };
                 span.finish(output, status);
                 self.store.update_span(span.clone());
                 self.event_bus.publish(TracingEvent::SpanUpdated { span });
@@ -119,7 +125,11 @@ impl TracingGraphObserver {
     ) {
         if let Some(detail) = self.store.get_trace(trace_id) {
             if let Some(mut span) = detail.spans.into_iter().find(|s| s.id == span_id) {
-                let status = if success { SpanStatus::Success } else { SpanStatus::Error };
+                let status = if success {
+                    SpanStatus::Success
+                } else {
+                    SpanStatus::Error
+                };
                 span.finish(output, status);
                 span.metadata.tokens_in = tokens_in;
                 span.metadata.tokens_out = tokens_out;
@@ -161,7 +171,11 @@ impl TracingGraphObserver {
     pub fn on_tool_end(&self, span_id: &str, trace_id: &str, output: JsonValue, success: bool) {
         if let Some(detail) = self.store.get_trace(trace_id) {
             if let Some(mut span) = detail.spans.into_iter().find(|s| s.id == span_id) {
-                let status = if success { SpanStatus::Success } else { SpanStatus::Error };
+                let status = if success {
+                    SpanStatus::Success
+                } else {
+                    SpanStatus::Error
+                };
                 span.finish(output, status);
                 self.store.update_span(span.clone());
                 self.event_bus.publish(TracingEvent::SpanUpdated { span });

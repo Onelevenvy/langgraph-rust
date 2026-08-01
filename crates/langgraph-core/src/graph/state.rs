@@ -1,24 +1,26 @@
+use crate::channels::{Channel, EphemeralValue, NamedBarrierValue};
+use crate::constants::{END, INTERRUPT, NULL_TASK_ID, RESUME, START};
+use crate::graph::branch::BranchSpec;
+use crate::graph::node::StateNodeSpec;
+use crate::pregel::algo::{apply_writes, prepare_next_tasks};
+use crate::pregel::io::{map_command, map_input, read_channels};
+use crate::pregel::{
+    channels_from_checkpoint, ChannelVersions, PregelExecutableTask, PregelNode, PregelRunner,
+};
+use crate::runnable::{IntoNodeFunction, Runnable, RunnableError};
+use crate::stream::StreamPart;
+use crate::types::{Command, Interrupt, PregelTask, StateSnapshot, StreamMode};
+use async_trait::async_trait;
+use langgraph_checkpoint::cache::base::BaseCache;
+use langgraph_checkpoint::checkpoint::base::BaseCheckpointSaver;
+use langgraph_checkpoint::checkpoint::types::CheckpointMetadata;
+use langgraph_checkpoint::config::{RunnableConfig, RunnableConfigExt};
+use langgraph_checkpoint::store::base::BaseStore;
+use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use langgraph_checkpoint::config::{RunnableConfig, RunnableConfigExt};
-use langgraph_checkpoint::cache::base::BaseCache;
-use langgraph_checkpoint::store::base::BaseStore;
-use langgraph_checkpoint::checkpoint::base::BaseCheckpointSaver;
-use crate::channels::{Channel, EphemeralValue, NamedBarrierValue};
-use crate::constants::{START, END, RESUME, INTERRUPT, NULL_TASK_ID};
-use crate::runnable::{Runnable, RunnableError, IntoNodeFunction};
-use crate::graph::node::StateNodeSpec;
-use crate::graph::branch::BranchSpec;
-use crate::pregel::{PregelNode, PregelRunner, ChannelVersions, channels_from_checkpoint, PregelExecutableTask};
-use crate::pregel::algo::{prepare_next_tasks, apply_writes};
-use crate::pregel::io::{map_input, map_command, read_channels};
-use crate::stream::StreamPart;
-use crate::types::{Command, StreamMode, StateSnapshot, PregelTask, Interrupt};
-use langgraph_checkpoint::checkpoint::types::CheckpointMetadata;
 
 /// Multi-source edge: waits for all sources to complete before routing to target.
 type WaitingEdge = (Vec<String>, String);
@@ -125,7 +127,8 @@ impl StateGraph {
         let name = name.into();
         self.validate_node_name(&name)?;
         let runnable = action.into_runnable(&name);
-        self.nodes.insert(name.clone(), StateNodeSpec::new(name, runnable));
+        self.nodes
+            .insert(name.clone(), StateNodeSpec::new(name, runnable));
         Ok(self)
     }
 
@@ -279,8 +282,10 @@ impl StateGraph {
         // Add trigger channels for each node ("branch:to:{name}")
         for name in self.nodes.keys() {
             let trigger_key = format!("branch:to:{}", name);
-            self.channels
-                .insert(trigger_key.clone(), Box::new(EphemeralValue::new(trigger_key, false)));
+            self.channels.insert(
+                trigger_key.clone(),
+                Box::new(EphemeralValue::new(trigger_key, false)),
+            );
         }
 
         // Add barrier channels for waiting edges
@@ -295,7 +300,8 @@ impl StateGraph {
 
         self.compiled = true;
 
-        let channels = self.channels
+        let channels = self
+            .channels
             .iter()
             .map(|(k, c)| (k.clone(), c.clone_channel()))
             .collect();
@@ -330,7 +336,10 @@ impl StateGraph {
     fn validate(&self) -> Result<(), GraphError> {
         // START must have at least one outgoing edge
         let has_start_edge = self.edges.iter().any(|(s, _)| s == START)
-            || self.waiting_edges.iter().any(|(s, _)| s.contains(&START.to_string()))
+            || self
+                .waiting_edges
+                .iter()
+                .any(|(s, _)| s.contains(&START.to_string()))
             || self.branches.contains_key(START);
         if !has_start_edge {
             return Err(GraphError::NoStartEdge);
@@ -480,8 +489,8 @@ impl CompiledStateGraph {
         channel_versions: &ChannelVersions,
         versions_seen: &HashMap<String, HashMap<String, JsonValue>>,
     ) -> Option<RunnableConfig> {
-        use langgraph_checkpoint::checkpoint::id::uuid6;
         use chrono::Utc;
+        use langgraph_checkpoint::checkpoint::id::uuid6;
 
         // Collect all channel values (including trigger channels for state history)
         let channel_values: HashMap<String, JsonValue> = channels
@@ -500,7 +509,9 @@ impl CompiledStateGraph {
         };
 
         let metadata = CheckpointMetadata::default();
-        checkpointer.put(config, &checkpoint, &metadata, channel_versions).ok()
+        checkpointer
+            .put(config, &checkpoint, &metadata, channel_versions)
+            .ok()
     }
 
     /// Determine which nodes should execute next given the current state.
@@ -511,10 +522,10 @@ impl CompiledStateGraph {
 
         // Check which nodes are triggered by edges from completed nodes
         for (start, end) in &self.edges {
-            if (start == START || state.contains_key(&format!("branch:to:{}", start)))
-                && end != END {
-                    next.push(end.clone());
-                }
+            if (start == START || state.contains_key(&format!("branch:to:{}", start))) && end != END
+            {
+                next.push(end.clone());
+            }
         }
 
         // Check conditional branches
@@ -546,9 +557,10 @@ impl CompiledStateGraph {
     /// println!("values: {}", snapshot.values);
     /// ```
     pub fn get_state(&self, config: &RunnableConfig) -> Result<StateSnapshot, GraphError> {
-        let checkpointer = self.checkpointer.as_ref().ok_or_else(|| {
-            GraphError::ValidationError("No checkpointer set".to_string())
-        })?;
+        let checkpointer = self
+            .checkpointer
+            .as_ref()
+            .ok_or_else(|| GraphError::ValidationError("No checkpointer set".to_string()))?;
 
         let saved = checkpointer
             .get_tuple(config)
@@ -675,9 +687,7 @@ impl CompiledStateGraph {
             .map(|pw| {
                 pw.iter()
                     .filter(|(_, chan, _)| chan == INTERRUPT)
-                    .filter_map(|(_, _, val)| {
-                        serde_json::from_value::<Interrupt>(val.clone()).ok()
-                    })
+                    .filter_map(|(_, _, val)| serde_json::from_value::<Interrupt>(val.clone()).ok())
                     .collect()
             })
             .unwrap_or_default();
@@ -745,9 +755,10 @@ impl CompiledStateGraph {
         config: &RunnableConfig,
         values: &JsonValue,
     ) -> Result<RunnableConfig, GraphError> {
-        let checkpointer = self.checkpointer.as_ref().ok_or_else(|| {
-            GraphError::ValidationError("No checkpointer set".to_string())
-        })?;
+        let checkpointer = self
+            .checkpointer
+            .as_ref()
+            .ok_or_else(|| GraphError::ValidationError("No checkpointer set".to_string()))?;
 
         let saved = checkpointer
             .get_tuple(config)
@@ -799,7 +810,13 @@ impl CompiledStateGraph {
         }
 
         // Save the updated checkpoint
-        self.save_checkpoint(checkpointer, config, &channels, &channel_versions, &versions_seen);
+        self.save_checkpoint(
+            checkpointer,
+            config,
+            &channels,
+            &channel_versions,
+            &versions_seen,
+        );
 
         Ok(config.clone())
     }
@@ -820,10 +837,14 @@ impl CompiledStateGraph {
     ///     println!("messages: {}, next: {:?}", snapshot.values["messages"].as_array().map(|a| a.len()), snapshot.next);
     /// }
     /// ```
-    pub fn get_state_history(&self, config: &RunnableConfig) -> Result<Vec<StateSnapshot>, GraphError> {
-        let checkpointer = self.checkpointer.as_ref().ok_or_else(|| {
-            GraphError::ValidationError("No checkpointer set".to_string())
-        })?;
+    pub fn get_state_history(
+        &self,
+        config: &RunnableConfig,
+    ) -> Result<Vec<StateSnapshot>, GraphError> {
+        let checkpointer = self
+            .checkpointer
+            .as_ref()
+            .ok_or_else(|| GraphError::ValidationError("No checkpointer set".to_string()))?;
 
         let tuples = checkpointer
             .list(Some(config), None, None, None)
@@ -885,7 +906,11 @@ impl CompiledStateGraph {
             let pending_writes: Vec<(String, String, JsonValue)> = saved
                 .pending_writes
                 .as_ref()
-                .map(|pw| pw.iter().map(|(t, c, v)| (t.clone(), c.clone(), v.clone())).collect())
+                .map(|pw| {
+                    pw.iter()
+                        .map(|(t, c, v)| (t.clone(), c.clone(), v.clone()))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let tasks = prepare_next_tasks(
@@ -940,13 +965,15 @@ impl CompiledStateGraph {
 
 impl Clone for CompiledStateGraph {
     fn clone(&self) -> Self {
-        let channels: HashMap<String, Box<dyn Channel>> = self.channels
+        let channels: HashMap<String, Box<dyn Channel>> = self
+            .channels
             .iter()
             .map(|(k, c)| (k.clone(), c.clone_channel()))
             .collect();
 
         // Manually clone branches (nested HashMap with non-Clone inner values already handled by Arc)
-        let branches: HashMap<String, HashMap<String, BranchSpec>> = self.branches
+        let branches: HashMap<String, HashMap<String, BranchSpec>> = self
+            .branches
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -994,7 +1021,10 @@ fn build_pregel_nodes(
     let mut edge_targets: HashMap<String, Vec<String>> = HashMap::new();
     for (start, end) in edges {
         if end != END {
-            edge_targets.entry(start.clone()).or_default().push(end.clone());
+            edge_targets
+                .entry(start.clone())
+                .or_default()
+                .push(end.clone());
         }
     }
 
@@ -1040,9 +1070,7 @@ fn build_pregel_nodes(
         // Determine input channels — all non-special channels
         let input_channels: Vec<String> = channels
             .keys()
-            .filter(|k| {
-                !k.starts_with("branch:") && !k.starts_with("join:") && *k != START
-            })
+            .filter(|k| !k.starts_with("branch:") && !k.starts_with("join:") && *k != START)
             .cloned()
             .collect();
 
@@ -1065,65 +1093,56 @@ fn build_pregel_nodes(
         let node_runnable = spec.runnable.clone();
         let node_name = name.clone();
 
-        let combined: Arc<dyn Runnable> = Arc::new(
-            crate::runnable::RunnableCallable::new(
-                node_name.clone(),
-                move |input, config| {
-                    let node_runnable = node_runnable.clone();
-                    let targets = targets.clone();
-                    let barrier_writes = barrier_writes.clone();
-                    let node_branches = node_branches.clone();
-                    async move {
-                        // 1. Execute the node logic
-                        let output = node_runnable.ainvoke(&input, &config).await?;
+        let combined: Arc<dyn Runnable> = Arc::new(crate::runnable::RunnableCallable::new(
+            node_name.clone(),
+            move |input, config| {
+                let node_runnable = node_runnable.clone();
+                let targets = targets.clone();
+                let barrier_writes = barrier_writes.clone();
+                let node_branches = node_branches.clone();
+                async move {
+                    // 1. Execute the node logic
+                    let output = node_runnable.ainvoke(&input, &config).await?;
 
-                        // 2. Build combined output: state updates + trigger writes
-                        let mut result = serde_json::Map::new();
+                    // 2. Build combined output: state updates + trigger writes
+                    let mut result = serde_json::Map::new();
 
-                        // Copy state updates from node output
-                        if let Some(obj) = output.as_object() {
-                            for (k, v) in obj {
-                                result.insert(k.clone(), v.clone());
-                            }
+                    // Copy state updates from node output
+                    if let Some(obj) = output.as_object() {
+                        for (k, v) in obj {
+                            result.insert(k.clone(), v.clone());
                         }
-
-                        // 3. Write to plain trigger channels for simple edge targets
-                        for target in &targets {
-                            let trigger_ch = format!("branch:to:{}", target);
-                            result.insert(trigger_ch, JsonValue::String(target.clone()));
-                        }
-
-                        // 4. Write into barrier channels for join-edge participation.
-                        // The value written is this node's own name so the
-                        // NamedBarrierValue can track which sources have arrived.
-                        for (barrier_ch, source_name) in &barrier_writes {
-                            result.insert(
-                                barrier_ch.clone(),
-                                JsonValue::String(source_name.clone()),
-                            );
-                        }
-
-                        // 5. Evaluate conditional branches
-                        for branch in &node_branches {
-                            let branch_result = branch.path.ainvoke(&output, &config).await?;
-                            let key = branch_result.as_str().unwrap_or("");
-                            if let Some(target) = branch.resolve(key) {
-                                let trigger_ch = format!("branch:to:{}", target);
-                                result.insert(trigger_ch, JsonValue::String(target));
-                            }
-                        }
-
-                        Ok(JsonValue::Object(result))
                     }
-                },
-            ),
-        );
 
-        let pregel_node = PregelNode::new(
-            input_channels,
-            vec![trigger],
-            combined,
-        );
+                    // 3. Write to plain trigger channels for simple edge targets
+                    for target in &targets {
+                        let trigger_ch = format!("branch:to:{}", target);
+                        result.insert(trigger_ch, JsonValue::String(target.clone()));
+                    }
+
+                    // 4. Write into barrier channels for join-edge participation.
+                    // The value written is this node's own name so the
+                    // NamedBarrierValue can track which sources have arrived.
+                    for (barrier_ch, source_name) in &barrier_writes {
+                        result.insert(barrier_ch.clone(), JsonValue::String(source_name.clone()));
+                    }
+
+                    // 5. Evaluate conditional branches
+                    for branch in &node_branches {
+                        let branch_result = branch.path.ainvoke(&output, &config).await?;
+                        let key = branch_result.as_str().unwrap_or("");
+                        if let Some(target) = branch.resolve(key) {
+                            let trigger_ch = format!("branch:to:{}", target);
+                            result.insert(trigger_ch, JsonValue::String(target));
+                        }
+                    }
+
+                    Ok(JsonValue::Object(result))
+                }
+            },
+        ));
+
+        let pregel_node = PregelNode::new(input_channels, vec![trigger], combined);
 
         pregel_nodes.insert(name.clone(), pregel_node);
     }
@@ -1166,7 +1185,10 @@ fn apply_completed_writes(
     channel_versions: &mut ChannelVersions,
 ) {
     // Update versions_seen only for completed tasks
-    for task in tasks.iter().filter(|t| t.id != interrupted_task_id && !t.writes.is_empty()) {
+    for task in tasks
+        .iter()
+        .filter(|t| t.id != interrupted_task_id && !t.writes.is_empty())
+    {
         let seen = versions_seen.entry(task.name.clone()).or_default();
         for trigger in &task.triggers {
             if let Some(ver) = channel_versions.get(trigger.as_str()) {
@@ -1186,12 +1208,18 @@ fn apply_completed_writes(
     // Collect and apply writes from completed tasks to channels.
     // Filter out all reserved keys (matching Python behavior).
     let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
-    for task in tasks.iter().filter(|t| t.id != interrupted_task_id && !t.writes.is_empty()) {
+    for task in tasks
+        .iter()
+        .filter(|t| t.id != interrupted_task_id && !t.writes.is_empty())
+    {
         for (chan, val) in &task.writes {
             if crate::constants::RESERVED.contains(&chan.as_str()) {
                 continue;
             }
-            writes_by_channel.entry(chan.clone()).or_default().push(val.clone());
+            writes_by_channel
+                .entry(chan.clone())
+                .or_default()
+                .push(val.clone());
         }
     }
 
@@ -1259,7 +1287,11 @@ impl CompiledStateGraph {
         };
         let _ = has_custom; // suppresses warning; custom_tx presence implies has_custom
 
-        let ctx = StreamCtx { modes, tx, custom_tx };
+        let ctx = StreamCtx {
+            modes,
+            tx,
+            custom_tx,
+        };
         self.run_pregel_inner(input, config, Some(&ctx)).await
     }
 
@@ -1278,12 +1310,16 @@ impl CompiledStateGraph {
         let config = config.clone();
 
         tokio::spawn(async move {
-            let result = graph.run_pregel_streaming(&input, &config, &modes, &tx).await;
+            let result = graph
+                .run_pregel_streaming(&input, &config, &modes, &tx)
+                .await;
             if let Err(e) = result {
-                let _ = tx.send(StreamPart::debug(
-                    vec![],
-                    serde_json::json!({"error": e.to_string()}),
-                )).await;
+                let _ = tx
+                    .send(StreamPart::debug(
+                        vec![],
+                        serde_json::json!({"error": e.to_string()}),
+                    ))
+                    .await;
             }
         });
 
@@ -1349,14 +1385,20 @@ impl CompiledStateGraph {
                         )
                     }
                     _ => (
-                        self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
+                        self.channels
+                            .iter()
+                            .map(|(k, c)| (k.clone(), c.clone_channel()))
+                            .collect(),
                         HashMap::new(),
                         HashMap::new(),
                     ),
                 }
             } else {
                 (
-                    self.channels.iter().map(|(k, c)| (k.clone(), c.clone_channel())).collect(),
+                    self.channels
+                        .iter()
+                        .map(|(k, c)| (k.clone(), c.clone_channel()))
+                        .collect(),
                     HashMap::new(),
                     HashMap::new(),
                 )
@@ -1434,7 +1476,6 @@ impl CompiledStateGraph {
             }
         }
 
-
         // ── Super-step loop ──────────────────────────────────────────────────
 
         while step < max_steps {
@@ -1454,12 +1495,10 @@ impl CompiledStateGraph {
                 &channel_versions,
             );
 
-
-
             if tasks.is_empty() {
                 break;
             }
-            
+
             // Consume pending writes (especially RESUME) so they don't apply to subsequent supersteps
             pending_writes.clear();
 
@@ -1482,7 +1521,13 @@ impl CompiledStateGraph {
                 let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
                 if task_names.iter().any(|n| self.interrupt_before.contains(n)) {
                     if let Some(ref cp) = self.checkpointer {
-                        if let Some(new_config) = self.save_checkpoint(cp, &config, &channels, &channel_versions, &versions_seen) {
+                        if let Some(new_config) = self.save_checkpoint(
+                            cp,
+                            &config,
+                            &channels,
+                            &channel_versions,
+                            &versions_seen,
+                        ) {
                             config = new_config;
                         }
                     }
@@ -1490,7 +1535,10 @@ impl CompiledStateGraph {
                     if let Some(s) = stream {
                         if s.has(&StreamMode::Values) {
                             let keys = output_channel_keys(&channels);
-                            let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                            let _ = s
+                                .tx
+                                .send(StreamPart::values(vec![], read_channels(&channels, &keys)))
+                                .await;
                         }
                     }
                     let keys = output_channel_keys(&channels);
@@ -1545,7 +1593,13 @@ impl CompiledStateGraph {
 
                     // Save checkpoint (now includes completed tasks' channel writes)
                     if let Some(ref cp) = self.checkpointer {
-                        if let Some(new_config) = self.save_checkpoint(cp, &config, &channels, &channel_versions, &versions_seen) {
+                        if let Some(new_config) = self.save_checkpoint(
+                            cp,
+                            &config,
+                            &channels,
+                            &channel_versions,
+                            &versions_seen,
+                        ) {
                             config = new_config;
                         }
                         // Save interrupt as pending writes for get_state()
@@ -1554,7 +1608,11 @@ impl CompiledStateGraph {
                             .iter()
                             .map(|iv| {
                                 let val = serde_json::to_value(iv).unwrap_or(JsonValue::Null);
-                                (task_id.clone(), crate::constants::INTERRUPT.to_string(), val)
+                                (
+                                    task_id.clone(),
+                                    crate::constants::INTERRUPT.to_string(),
+                                    val,
+                                )
                             })
                             .collect();
                         if !iw.is_empty() {
@@ -1568,7 +1626,10 @@ impl CompiledStateGraph {
                     if let Some(s) = stream {
                         if s.has(&StreamMode::Values) {
                             let keys = output_channel_keys(&channels);
-                            let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                            let _ = s
+                                .tx
+                                .send(StreamPart::values(vec![], read_channels(&channels, &keys)))
+                                .await;
                         }
                     }
 
@@ -1621,7 +1682,9 @@ impl CompiledStateGraph {
 
             // Save "loop" checkpoint after each completed super-step
             if let Some(ref cp) = self.checkpointer {
-                if let Some(new_config) = self.save_checkpoint(cp, &config, &channels, &channel_versions, &versions_seen) {
+                if let Some(new_config) =
+                    self.save_checkpoint(cp, &config, &channels, &channel_versions, &versions_seen)
+                {
                     config = new_config;
                 }
             }
@@ -1630,7 +1693,9 @@ impl CompiledStateGraph {
             if let Some(s) = stream {
                 if s.has(&StreamMode::Values) {
                     let keys = output_channel_keys(&channels);
-                    let _ = s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys))).await;
+                    let _ =
+                        s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys)))
+                            .await;
                 }
             }
 
@@ -1654,13 +1719,15 @@ impl CompiledStateGraph {
 
         Ok(last_output)
     }
-
-
 }
 
 #[async_trait]
 impl Runnable for CompiledStateGraph {
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         // Block on the async implementation
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => handle.block_on(self.run_pregel(input, config)),
@@ -1670,7 +1737,11 @@ impl Runnable for CompiledStateGraph {
         }
     }
 
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         self.run_pregel(input, config).await
     }
 
@@ -1687,7 +1758,10 @@ mod tests {
 
     fn make_channels() -> HashMap<String, Box<dyn Channel>> {
         let mut channels = HashMap::new();
-        channels.insert("value".to_string(), Box::new(LastValue::new("value")) as Box<dyn Channel>);
+        channels.insert(
+            "value".to_string(),
+            Box::new(LastValue::new("value")) as Box<dyn Channel>,
+        );
         channels
     }
 
@@ -1715,7 +1789,9 @@ mod tests {
     #[test]
     fn test_duplicate_node_error() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("a", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("a", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
         let result = graph.add_node("a", |_input, _config| async { Ok(json!({})) });
         assert!(result.is_err());
     }
@@ -1730,7 +1806,9 @@ mod tests {
     #[test]
     fn test_end_as_source_error() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("a", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("a", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
         let result = graph.add_edge(END, "a");
         assert!(result.is_err());
     }
@@ -1738,7 +1816,9 @@ mod tests {
     #[test]
     fn test_start_as_target_error() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("a", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("a", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
         let result = graph.add_edge("a", START);
         assert!(result.is_err());
     }
@@ -1746,7 +1826,9 @@ mod tests {
     #[test]
     fn test_no_start_edge_error() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("a", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("a", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
         let result = graph.compile();
         assert!(result.is_err());
     }
@@ -1754,13 +1836,21 @@ mod tests {
     #[test]
     fn test_join_edge() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("a", |_input, _config| async { Ok(json!({})) }).unwrap();
-        graph.add_node("b", |_input, _config| async { Ok(json!({})) }).unwrap();
-        graph.add_node("c", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("a", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
+        graph
+            .add_node("b", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
+        graph
+            .add_node("c", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
 
         graph.add_edge(START, "a").unwrap();
         graph.add_edge(START, "b").unwrap();
-        graph.add_join_edge(vec!["a".to_string(), "b".to_string()], "c").unwrap();
+        graph
+            .add_join_edge(vec!["a".to_string(), "b".to_string()], "c")
+            .unwrap();
         graph.add_edge("c", END).unwrap();
 
         let compiled = graph.compile().unwrap();
@@ -1770,8 +1860,12 @@ mod tests {
     #[test]
     fn test_conditional_edges() {
         let mut graph = StateGraph::new(make_channels());
-        graph.add_node("agent", |_input, _config| async { Ok(json!({})) }).unwrap();
-        graph.add_node("tools", |_input, _config| async { Ok(json!({})) }).unwrap();
+        graph
+            .add_node("agent", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
+        graph
+            .add_node("tools", |_input, _config| async { Ok(json!({})) })
+            .unwrap();
 
         graph.add_edge(START, "agent").unwrap();
         graph
@@ -1795,7 +1889,10 @@ mod tests {
     async fn test_invoke_linear_graph() {
         // End-to-end test: build graph → compile → invoke → check output
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
-        channels.insert("count".to_string(), Box::new(LastValue::new("count")) as Box<dyn Channel>);
+        channels.insert(
+            "count".to_string(),
+            Box::new(LastValue::new("count")) as Box<dyn Channel>,
+        );
 
         let mut graph = StateGraph::new(channels);
 
@@ -1816,7 +1913,10 @@ mod tests {
 
         let compiled = graph.compile().unwrap();
         let config = RunnableConfig::new();
-        let result = compiled.ainvoke(&json!({"count": 0}), &config).await.unwrap();
+        let result = compiled
+            .ainvoke(&json!({"count": 0}), &config)
+            .await
+            .unwrap();
 
         // The output should contain the "count" channel value
         assert!(result.is_object());
@@ -1827,7 +1927,10 @@ mod tests {
     #[tokio::test]
     async fn test_invoke_single_node() {
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
-        channels.insert("result".to_string(), Box::new(LastValue::new("result")) as Box<dyn Channel>);
+        channels.insert(
+            "result".to_string(),
+            Box::new(LastValue::new("result")) as Box<dyn Channel>,
+        );
 
         let mut graph = StateGraph::new(channels);
         graph
@@ -1849,7 +1952,10 @@ mod tests {
     async fn test_interrupt_before() {
         // Test interrupt_before: graph pauses before executing the specified node
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
-        channels.insert("value".to_string(), Box::new(LastValue::new("value")) as Box<dyn Channel>);
+        channels.insert(
+            "value".to_string(),
+            Box::new(LastValue::new("value")) as Box<dyn Channel>,
+        );
 
         let mut graph = StateGraph::new(channels);
 
@@ -1878,7 +1984,10 @@ mod tests {
     async fn test_interrupt_after() {
         // Test interrupt_after: graph pauses after executing the specified node
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
-        channels.insert("value".to_string(), Box::new(LastValue::new("value")) as Box<dyn Channel>);
+        channels.insert(
+            "value".to_string(),
+            Box::new(LastValue::new("value")) as Box<dyn Channel>,
+        );
 
         let mut graph = StateGraph::new(channels);
 
@@ -1908,8 +2017,14 @@ mod tests {
         use langgraph_checkpoint::checkpoint::memory::InMemorySaver;
 
         let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
-        channels.insert("name".to_string(), Box::new(LastValue::new("name")) as Box<dyn Channel>);
-        channels.insert("value".to_string(), Box::new(LastValue::new("value")) as Box<dyn Channel>);
+        channels.insert(
+            "name".to_string(),
+            Box::new(LastValue::new("name")) as Box<dyn Channel>,
+        );
+        channels.insert(
+            "value".to_string(),
+            Box::new(LastValue::new("value")) as Box<dyn Channel>,
+        );
 
         let mut graph = StateGraph::new(channels);
         graph
@@ -1921,29 +2036,50 @@ mod tests {
         graph.add_edge("set_value", END).unwrap();
 
         let checkpointer = Arc::new(InMemorySaver::new());
-        let compiled = graph.compile_builder()
+        let compiled = graph
+            .compile_builder()
             .checkpointer(checkpointer)
             .build()
             .unwrap();
 
         let mut config = RunnableConfig::new();
-        config.insert("configurable".to_string(), json!({"thread_id": "test-thread"}));
+        config.insert(
+            "configurable".to_string(),
+            json!({"thread_id": "test-thread"}),
+        );
 
         // First invoke
-        let result = compiled.ainvoke(&json!({"name": "original"}), &config).await.unwrap();
+        let result = compiled
+            .ainvoke(&json!({"name": "original"}), &config)
+            .await
+            .unwrap();
         assert_eq!(result.get("value"), Some(&json!(42)));
 
         // Verify get_state
         let snapshot = compiled.get_state(&config).unwrap();
-        assert_eq!(snapshot.values.get("name").and_then(|v| v.as_str()), Some("original"));
-        assert_eq!(snapshot.values.get("value").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(
+            snapshot.values.get("name").and_then(|v| v.as_str()),
+            Some("original")
+        );
+        assert_eq!(
+            snapshot.values.get("value").and_then(|v| v.as_i64()),
+            Some(42)
+        );
 
         // Update state
-        compiled.update_state(&config, &json!({"name": "updated"})).unwrap();
+        compiled
+            .update_state(&config, &json!({"name": "updated"}))
+            .unwrap();
 
         // Verify update took effect
         let snapshot = compiled.get_state(&config).unwrap();
-        assert_eq!(snapshot.values.get("name").and_then(|v| v.as_str()), Some("updated"));
-        assert_eq!(snapshot.values.get("value").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(
+            snapshot.values.get("name").and_then(|v| v.as_str()),
+            Some("updated")
+        );
+        assert_eq!(
+            snapshot.values.get("value").and_then(|v| v.as_i64()),
+            Some(42)
+        );
     }
 }

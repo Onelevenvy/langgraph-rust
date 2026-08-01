@@ -1,10 +1,10 @@
-use std::cell::RefCell;
-use std::sync::Arc;
-use serde_json::Value as JsonValue;
-use tokio::sync::mpsc;
+use crate::runtime::Runtime;
 use langgraph_checkpoint::config::RunnableConfig;
 use langgraph_checkpoint::store::base::BaseStore;
-use crate::runtime::Runtime;
+use serde_json::Value as JsonValue;
+use std::cell::RefCell;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 // Task-local config for async contexts
 tokio::task_local! {
@@ -66,9 +66,7 @@ pub async fn with_config<F, R>(config: RunnableConfig, f: F) -> R
 where
     F: std::future::Future<Output = R>,
 {
-    ASYNC_CONFIG
-        .scope(RefCell::new(Some(config)), f)
-        .await
+    ASYNC_CONFIG.scope(RefCell::new(Some(config)), f).await
 }
 
 /// Set the config, runtime, and store for the current async task scope.

@@ -105,7 +105,15 @@ impl<M: BaseChatModel + 'static> BaseChatModel for TracingChatModel<M> {
         let start = Instant::now();
         let result = self.inner.invoke(messages, config);
         let input_json = serde_json::to_value(messages).unwrap_or(JsonValue::Null);
-        record_llm_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), input_json, &result);
+        record_llm_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            input_json,
+            &result,
+        );
         let _ = start;
         result
     }
@@ -118,7 +126,15 @@ impl<M: BaseChatModel + 'static> BaseChatModel for TracingChatModel<M> {
         let start = Instant::now();
         let result = self.inner.ainvoke(messages, config).await;
         let input_json = serde_json::to_value(messages).unwrap_or(JsonValue::Null);
-        record_llm_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), input_json, &result);
+        record_llm_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            input_json,
+            &result,
+        );
         let _ = start;
         result
     }
@@ -139,20 +155,20 @@ impl<M: BaseChatModel + 'static> BaseChatModel for TracingChatModel<M> {
 
         Box::pin(async_stream::stream! {
             let mut accumulated_message: Option<Message> = None;
-            
+
             while let Some(result) = tokio_stream::StreamExt::next(&mut stream).await {
                 if let Ok(ref msg) = result {
                     match accumulated_message {
                         None => {
                             accumulated_message = Some(msg.clone());
                         }
-                        Some(langgraph_prebuilt::types::Message::Ai { 
+                        Some(langgraph_prebuilt::types::Message::Ai {
                             content: langgraph_prebuilt::types::MessageContent::Text(ref mut acc_text),
                             ref mut tool_calls,
                             ref mut usage,
                             ..
                         }) => {
-                            if let langgraph_prebuilt::types::Message::Ai { 
+                            if let langgraph_prebuilt::types::Message::Ai {
                                 content: langgraph_prebuilt::types::MessageContent::Text(ref msg_text),
                                 tool_calls: ref msg_tools,
                                 usage: ref msg_usage,
@@ -233,7 +249,15 @@ impl BaseChatModel for DynamicTracingChatModel {
         let start = Instant::now();
         let result = self.inner.invoke(messages, config);
         let input_json = serde_json::to_value(messages).unwrap_or(JsonValue::Null);
-        record_llm_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), input_json, &result);
+        record_llm_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            input_json,
+            &result,
+        );
         let _ = start;
         result
     }
@@ -246,7 +270,15 @@ impl BaseChatModel for DynamicTracingChatModel {
         let start = Instant::now();
         let result = self.inner.ainvoke(messages, config).await;
         let input_json = serde_json::to_value(messages).unwrap_or(JsonValue::Null);
-        record_llm_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), input_json, &result);
+        record_llm_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            input_json,
+            &result,
+        );
         let _ = start;
         result
     }
@@ -267,20 +299,20 @@ impl BaseChatModel for DynamicTracingChatModel {
 
         Box::pin(async_stream::stream! {
             let mut accumulated_message: Option<Message> = None;
-            
+
             while let Some(result) = tokio_stream::StreamExt::next(&mut stream).await {
                 if let Ok(ref msg) = result {
                     match accumulated_message {
                         None => {
                             accumulated_message = Some(msg.clone());
                         }
-                        Some(langgraph_prebuilt::types::Message::Ai { 
+                        Some(langgraph_prebuilt::types::Message::Ai {
                             content: langgraph_prebuilt::types::MessageContent::Text(ref mut acc_text),
                             ref mut tool_calls,
                             ref mut usage,
                             ..
                         }) => {
-                            if let langgraph_prebuilt::types::Message::Ai { 
+                            if let langgraph_prebuilt::types::Message::Ai {
                                 content: langgraph_prebuilt::types::MessageContent::Text(ref msg_text),
                                 tool_calls: ref msg_tools,
                                 usage: ref msg_usage,
@@ -413,18 +445,42 @@ impl<T: BaseTool + 'static> BaseTool for TracingTool<T> {
         self.inner.parameters()
     }
 
-    fn invoke(&self, args: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, langgraph_prebuilt::traits::ToolError> {
+    fn invoke(
+        &self,
+        args: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, langgraph_prebuilt::traits::ToolError> {
         let start = Instant::now();
         let result = self.inner.invoke(args, config);
-        record_tool_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), args, &result);
+        record_tool_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            args,
+            &result,
+        );
         let _ = start;
         result
     }
 
-    async fn ainvoke(&self, args: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, langgraph_prebuilt::traits::ToolError> {
+    async fn ainvoke(
+        &self,
+        args: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, langgraph_prebuilt::traits::ToolError> {
         let start = Instant::now();
         let result = self.inner.ainvoke(args, config).await;
-        record_tool_span(self.store.as_ref(), &self.event_bus, &self.trace_id, &self.parent_span_id, self.inner.name(), args, &result);
+        record_tool_span(
+            self.store.as_ref(),
+            &self.event_bus,
+            &self.trace_id,
+            &self.parent_span_id,
+            self.inner.name(),
+            args,
+            &result,
+        );
         let _ = start;
         result
     }

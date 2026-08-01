@@ -1,7 +1,7 @@
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
 
 /// Reducer function type: (current, update) -> new
 pub type ReducerFn = fn(&JsonValue, &JsonValue) -> JsonValue;
@@ -81,10 +81,7 @@ impl Channel for BinaryOperatorAggregate {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn is_available(&self) -> bool {
@@ -155,7 +152,8 @@ mod tests {
     fn test_overwrite() {
         let ch = BinaryOperatorAggregate::new("items", append_reducer);
         ch.update(&[serde_json::json!([1, 2])]).unwrap();
-        ch.update(&[serde_json::json!({"__overwrite__": [99]})]).unwrap();
+        ch.update(&[serde_json::json!({"__overwrite__": [99]})])
+            .unwrap();
         assert_eq!(ch.get().unwrap(), serde_json::json!([99]));
     }
 

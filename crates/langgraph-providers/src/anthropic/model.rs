@@ -81,7 +81,6 @@ struct ImageSource {
     url: String,
 }
 
-
 #[derive(Serialize)]
 struct RawToolDef {
     name: String,
@@ -103,9 +102,17 @@ struct RawResponse {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ResponseContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    Thinking { thinking: String },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    Thinking {
+        thinking: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -289,10 +296,7 @@ impl AnthropicModel {
     }
 
     fn api_version(&self) -> &str {
-        self.config
-            .api_version
-            .as_deref()
-            .unwrap_or("2023-06-01")
+        self.config.api_version.as_deref().unwrap_or("2023-06-01")
     }
 
     fn convert_content(content: &langgraph_prebuilt::MessageContent) -> RawContent {
@@ -321,11 +325,7 @@ impl AnthropicModel {
     }
 
     /// Build the request, extracting system messages to top-level.
-    fn build_request(
-        &self,
-        messages: &[Message],
-        stream: bool,
-    ) -> RawRequest {
+    fn build_request(&self, messages: &[Message], stream: bool) -> RawRequest {
         let mut system_text = Vec::new();
         let mut raw_messages = Vec::new();
 
@@ -552,7 +552,9 @@ impl BaseChatModel for AnthropicModel {
         let tool_calls = Self::extract_tool_calls(&raw.content);
         let usage = raw.usage.as_ref().map(Self::extract_usage);
 
-        Ok(common::build_ai_message(content, tool_calls, thinking, usage))
+        Ok(common::build_ai_message(
+            content, tool_calls, thinking, usage,
+        ))
     }
 
     fn astream<'a>(
@@ -778,10 +780,7 @@ mod tests {
             ..Default::default()
         });
 
-        let messages = vec![
-            Message::system("You are helpful."),
-            Message::human("Hello"),
-        ];
+        let messages = vec![Message::system("You are helpful."), Message::human("Hello")];
         let req = model.build_request(&messages, false);
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, "user");

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
+use super::types::*;
 use crate::config::RunnableConfig;
 use crate::error::CheckpointError;
-use super::types::*;
+use async_trait::async_trait;
+use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// Default WRITES_IDX_MAP for special write channels
 pub fn writes_idx_map() -> HashMap<&'static str, i64> {
@@ -37,7 +37,10 @@ pub fn excluded_metadata_keys() -> &'static [&'static str] {
 #[async_trait]
 pub trait BaseCheckpointSaver: Send + Sync {
     /// Get a checkpoint tuple by config.
-    fn get_tuple(&self, config: &RunnableConfig) -> Result<Option<CheckpointTuple>, CheckpointError>;
+    fn get_tuple(
+        &self,
+        config: &RunnableConfig,
+    ) -> Result<Option<CheckpointTuple>, CheckpointError>;
 
     /// List checkpoint tuples.
     fn list(
@@ -87,7 +90,10 @@ pub trait BaseCheckpointSaver: Send + Sync {
 
     // Async mirrors with default implementations
 
-    async fn aget_tuple(&self, config: &RunnableConfig) -> Result<Option<CheckpointTuple>, CheckpointError> {
+    async fn aget_tuple(
+        &self,
+        config: &RunnableConfig,
+    ) -> Result<Option<CheckpointTuple>, CheckpointError> {
         let config = config.clone();
         let this = self;
         // Use blocking for default impl
@@ -105,9 +111,7 @@ pub trait BaseCheckpointSaver: Send + Sync {
         let checkpoint = checkpoint.clone();
         let metadata = metadata.clone();
         let new_versions = new_versions.clone();
-        tokio::task::block_in_place(|| {
-            self.put(&config, &checkpoint, &metadata, &new_versions)
-        })
+        tokio::task::block_in_place(|| self.put(&config, &checkpoint, &metadata, &new_versions))
     }
 
     async fn aput_writes(
@@ -118,9 +122,7 @@ pub trait BaseCheckpointSaver: Send + Sync {
         task_path: String,
     ) -> Result<(), CheckpointError> {
         let config = config.clone();
-        tokio::task::block_in_place(|| {
-            self.put_writes(&config, &writes, &task_id, &task_path)
-        })
+        tokio::task::block_in_place(|| self.put_writes(&config, &writes, &task_id, &task_path))
     }
 
     async fn adelete_thread(&self, thread_id: String) -> Result<(), CheckpointError> {
@@ -170,8 +172,8 @@ pub fn create_checkpoint(
     channel_values: HashMap<String, JsonValue>,
     _step: i64,
 ) -> Checkpoint {
-    use chrono::Utc;
     use crate::checkpoint::id::uuid6;
+    use chrono::Utc;
 
     Checkpoint {
         v: LATEST_VERSION,

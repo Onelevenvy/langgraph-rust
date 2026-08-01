@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
-use langgraph::graph::GraphError;
-use langgraph::runnable::{Runnable, RunnableError};
 use langgraph::channels::{BinaryOperatorAggregate, Channel};
-use langgraph::constants::{START, END};
+use langgraph::constants::{END, START};
+use langgraph::graph::GraphError;
 use langgraph::graph::StateGraph;
+use langgraph::runnable::{Runnable, RunnableError};
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 
-use crate::traits::{BaseChatModel, BaseTool, ToolDef};
-use crate::types::{Message, add_messages};
 use crate::tool_node::ToolNode;
 use crate::tools_condition::tools_condition;
+use crate::traits::{BaseChatModel, BaseTool, ToolDef};
+use crate::types::{add_messages, Message};
 
 /// Configuration for creating a ReAct agent.
 pub struct ReActAgentConfig {
@@ -47,12 +47,20 @@ pub struct ReActAgent {
 
 impl ReActAgent {
     /// Invoke the agent synchronously.
-    pub fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    pub fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         self.graph.invoke(input, config)
     }
 
     /// Invoke the agent asynchronously.
-    pub async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    pub async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         self.graph.ainvoke(input, config).await
     }
 }
@@ -91,9 +99,7 @@ pub fn create_react_agent(
     let bound_model: Arc<dyn BaseChatModel> = Arc::from(model.bind_tools(tool_defs));
 
     // Create the ToolNode (wrapped in Arc for sharing across closures)
-    let tool_node = Arc::new(
-        ToolNode::new(tools).with_error_handling(config.handle_tool_errors)
-    );
+    let tool_node = Arc::new(ToolNode::new(tools).with_error_handling(config.handle_tool_errors));
 
     // -------------------------------------------------------
     // Build graph: START → agent → [should_continue] → tools → agent (loop) → END
@@ -134,7 +140,8 @@ pub fn create_react_agent(
                 }
             }
 
-            let response = model.invoke(&typed_messages, &RunnableConfig::new())
+            let response = model
+                .invoke(&typed_messages, &RunnableConfig::new())
                 .map_err(|e| RunnableError::Node(e.to_string()))?;
             let response_json = serde_json::to_value(response)
                 .map_err(|e: serde_json::Error| RunnableError::Node(e.to_string()))?;
@@ -149,9 +156,7 @@ pub fn create_react_agent(
     let tools_arc = tool_node.clone();
     graph.add_node("tools", move |input: JsonValue, config: RunnableConfig| {
         let tn = tools_arc.clone();
-        async move {
-            tn.ainvoke(&input, &config).await
-        }
+        async move { tn.ainvoke(&input, &config).await }
     })?;
 
     // --- Conditional edge: agent → tools or END ---
@@ -190,7 +195,6 @@ pub fn create_react_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_merge_state() {

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::runnable::Runnable;
+use std::sync::Arc;
 
 /// Specification for a graph node in the Pregel engine.
 ///
@@ -23,11 +23,7 @@ pub struct PregelNode {
 }
 
 impl PregelNode {
-    pub fn new(
-        channels: Vec<String>,
-        triggers: Vec<String>,
-        bound: Arc<dyn Runnable>,
-    ) -> Self {
+    pub fn new(channels: Vec<String>, triggers: Vec<String>, bound: Arc<dyn Runnable>) -> Self {
         Self {
             channels,
             triggers,

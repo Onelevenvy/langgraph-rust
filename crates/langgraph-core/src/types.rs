@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use crate::config;
+use crate::constants::{CONFIG_KEY_CHECKPOINT_NS, CONFIG_KEY_SCRATCHPAD};
+use langgraph_checkpoint::config::RunnableConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
-use crate::config;
-use crate::constants::{CONFIG_KEY_SCRATCHPAD, CONFIG_KEY_CHECKPOINT_NS};
+use std::collections::HashMap;
 
 /// Durability mode for checkpoint writes
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,12 +150,10 @@ impl Default for RetryPolicy {
 }
 
 /// Cache policy for task results
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CachePolicy {
     pub ttl: Option<i64>,
 }
-
 
 /// Overwrite bypasses the reducer and writes directly
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,7 +303,9 @@ pub fn interrupt(value: JsonValue) -> Result<JsonValue, InterruptError> {
     // Check if there's a resume value in the scratchpad
     if let Some(configurable) = config.get("configurable") {
         if let Some(scratchpad_val) = configurable.get(CONFIG_KEY_SCRATCHPAD) {
-            if let Ok(mut scratchpad) = serde_json::from_value::<PregelScratchpad>(scratchpad_val.clone()) {
+            if let Ok(mut scratchpad) =
+                serde_json::from_value::<PregelScratchpad>(scratchpad_val.clone())
+            {
                 let idx = scratchpad.next_interrupt_id() as usize;
 
                 // Check if we have a resume value for this interrupt

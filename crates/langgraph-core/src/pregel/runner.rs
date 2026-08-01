@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use crate::config;
-use crate::runtime::{Runtime, StreamWriter};
-use crate::runnable::RunnableError;
 use super::PregelExecutableTask;
+use crate::config;
+use crate::runnable::RunnableError;
+use crate::runtime::{Runtime, StreamWriter};
+use std::sync::Arc;
 
 /// Dispatches tasks for parallel execution using tokio.
 ///
@@ -18,7 +18,10 @@ pub struct PregelRunner {
 
 impl PregelRunner {
     pub fn new(runtime: Option<Arc<Runtime>>) -> Self {
-        Self { runtime, stream_writer: None }
+        Self {
+            runtime,
+            stream_writer: None,
+        }
     }
 
     pub fn with_stream_writer(mut self, writer: StreamWriter) -> Self {
@@ -37,12 +40,14 @@ impl PregelRunner {
 
         if tasks.len() == 1 {
             let task = &mut tasks[0];
-            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone()).await?;
+            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone())
+                .await?;
             return Ok(());
         }
 
         for task in tasks.iter_mut() {
-            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone()).await?;
+            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone())
+                .await?;
         }
 
         Ok(())

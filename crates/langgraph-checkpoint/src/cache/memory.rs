@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use super::base::*;
+use crate::error::CheckpointError;
+use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use async_trait::async_trait;
-use crate::error::CheckpointError;
-use super::base::*;
+use std::collections::HashMap;
 
 /// In-memory cache implementation
 pub struct InMemoryCache {
@@ -27,7 +27,10 @@ impl Default for InMemoryCache {
 
 #[async_trait]
 impl BaseCache for InMemoryCache {
-    fn get(&self, keys: &[(CacheNamespace, String)]) -> Result<HashMap<FullKey, JsonValue>, CheckpointError> {
+    fn get(
+        &self,
+        keys: &[(CacheNamespace, String)],
+    ) -> Result<HashMap<FullKey, JsonValue>, CheckpointError> {
         let cache = self.cache.read();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -60,10 +63,11 @@ impl BaseCache for InMemoryCache {
             .as_secs_f64();
 
         for ((namespace, key), value, ttl_secs) in pairs {
-            let bytes = serde_json::to_vec(value)
-                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
+            let bytes =
+                serde_json::to_vec(value).map_err(|e| CheckpointError::Storage(e.to_string()))?;
             let expire_at = ttl_secs.map(|ttl| now + ttl as f64);
-            cache.entry(namespace.clone())
+            cache
+                .entry(namespace.clone())
                 .or_default()
                 .insert(key.clone(), ("json".to_string(), bytes, expire_at));
         }
@@ -97,7 +101,9 @@ mod tests {
         let key = "k1".to_string();
 
         // Set
-        cache.set(&[((ns.clone(), key.clone()), serde_json::json!("hello"), None)]).unwrap();
+        cache
+            .set(&[((ns.clone(), key.clone()), serde_json::json!("hello"), None)])
+            .unwrap();
 
         // Get
         let result = cache.get(&[(ns.clone(), key.clone())]).unwrap();
@@ -108,7 +114,9 @@ mod tests {
     #[test]
     fn test_cache_miss() {
         let cache = InMemoryCache::new();
-        let result = cache.get(&[(vec!["ns".to_string()], "missing".to_string())]).unwrap();
+        let result = cache
+            .get(&[(vec!["ns".to_string()], "missing".to_string())])
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -116,7 +124,9 @@ mod tests {
     fn test_cache_clear() {
         let cache = InMemoryCache::new();
         let ns = vec!["test".to_string()];
-        cache.set(&[((ns.clone(), "k1".to_string()), serde_json::json!(1), None)]).unwrap();
+        cache
+            .set(&[((ns.clone(), "k1".to_string()), serde_json::json!(1), None)])
+            .unwrap();
         cache.clear(Some(&[ns.clone()])).unwrap();
         let result = cache.get(&[(ns, "k1".to_string())]).unwrap();
         assert!(result.is_empty());

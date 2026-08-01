@@ -2,8 +2,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde_json::Value as JsonValue;
 use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 
 use super::base::{Runnable, RunnableError};
 use super::callable::RunnableCallable;
@@ -57,8 +57,7 @@ pub struct SyncNodeFn<F>(pub F);
 
 impl<F> IntoNodeFunction for SyncNodeFn<F>
 where
-    F: Fn(&JsonValue, &RunnableConfig) -> Result<JsonValue, RunnableError>
-        + Send + Sync + 'static,
+    F: Fn(&JsonValue, &RunnableConfig) -> Result<JsonValue, RunnableError> + Send + Sync + 'static,
 {
     fn into_runnable(self, name: &str) -> Arc<dyn Runnable> {
         Arc::new(RunnableCallable::new_sync(name, self.0))
@@ -90,9 +89,10 @@ where
 {
     fn into_runnable(self, name: &str) -> Arc<dyn Runnable> {
         let f = self.0;
-        Arc::new(RunnableCallable::new_sync(name, move |input: &JsonValue, _config: &RunnableConfig| {
-            f(input)
-        }))
+        Arc::new(RunnableCallable::new_sync(
+            name,
+            move |input: &JsonValue, _config: &RunnableConfig| f(input),
+        ))
     }
 }
 
@@ -122,10 +122,13 @@ where
 {
     fn into_runnable(self, name: &str) -> Arc<dyn Runnable> {
         let f = self.0;
-        Arc::new(RunnableCallable::new_sync(name, move |input: &JsonValue, _config: &RunnableConfig| {
-            let route = f(input);
-            Ok(JsonValue::String(route))
-        }))
+        Arc::new(RunnableCallable::new_sync(
+            name,
+            move |input: &JsonValue, _config: &RunnableConfig| {
+                let route = f(input);
+                Ok(JsonValue::String(route))
+            },
+        ))
     }
 }
 

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use crate::error::StoreError;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use chrono::{DateTime, Utc};
-use crate::error::StoreError;
+use std::collections::HashMap;
 
 /// Sentinel for "not provided" vs "explicitly None"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +168,12 @@ pub trait BaseStore: Send + Sync {
 
     // Convenience methods with default implementations
 
-    fn get(&self, namespace: &[&str], key: &str, refresh_ttl: Option<bool>) -> Result<Option<Item>, StoreError> {
+    fn get(
+        &self,
+        namespace: &[&str],
+        key: &str,
+        refresh_ttl: Option<bool>,
+    ) -> Result<Option<Item>, StoreError> {
         let ops = vec![Op::Get(GetOp {
             namespace: namespace.iter().map(|s| s.to_string()).collect(),
             key: key.to_string(),
@@ -246,17 +251,27 @@ pub trait BaseStore: Send + Sync {
         if let Some(p) = prefix {
             conditions.push(MatchCondition {
                 match_type: NamespaceMatchType::Prefix,
-                path: p.iter().map(|s| NamespacePathSegment::Literal(s.to_string())).collect(),
+                path: p
+                    .iter()
+                    .map(|s| NamespacePathSegment::Literal(s.to_string()))
+                    .collect(),
             });
         }
         if let Some(s) = suffix {
             conditions.push(MatchCondition {
                 match_type: NamespaceMatchType::Suffix,
-                path: s.iter().map(|seg| NamespacePathSegment::Literal(seg.to_string())).collect(),
+                path: s
+                    .iter()
+                    .map(|seg| NamespacePathSegment::Literal(seg.to_string()))
+                    .collect(),
             });
         }
         let ops = vec![Op::ListNamespaces(ListNamespacesOp {
-            match_conditions: if conditions.is_empty() { None } else { Some(conditions) },
+            match_conditions: if conditions.is_empty() {
+                None
+            } else {
+                Some(conditions)
+            },
             max_depth,
             limit,
             offset,
@@ -269,7 +284,12 @@ pub trait BaseStore: Send + Sync {
 
     // Async convenience methods
 
-    async fn aget(&self, namespace: &[&str], key: &str, refresh_ttl: Option<bool>) -> Result<Option<Item>, StoreError> {
+    async fn aget(
+        &self,
+        namespace: &[&str],
+        key: &str,
+        refresh_ttl: Option<bool>,
+    ) -> Result<Option<Item>, StoreError> {
         let ops = vec![Op::Get(GetOp {
             namespace: namespace.iter().map(|s| s.to_string()).collect(),
             key: key.to_string(),
@@ -316,11 +336,15 @@ pub trait BaseStore: Send + Sync {
 /// Validate a namespace (must not be empty, must not contain empty strings)
 pub fn validate_namespace(namespace: &[String]) -> Result<(), StoreError> {
     if namespace.is_empty() {
-        return Err(StoreError::InvalidNamespace("namespace cannot be empty".to_string()));
+        return Err(StoreError::InvalidNamespace(
+            "namespace cannot be empty".to_string(),
+        ));
     }
     for segment in namespace {
         if segment.is_empty() {
-            return Err(StoreError::InvalidNamespace("namespace segment cannot be empty".to_string()));
+            return Err(StoreError::InvalidNamespace(
+                "namespace segment cannot be empty".to_string(),
+            ));
         }
     }
     Ok(())

@@ -1,11 +1,11 @@
 use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
-use langgraph::prelude::*;
-use langgraph::runnable::{RunnableCallable, RunnableError};
-use langgraph::prelude::RunnableConfig;
 use langgraph::prebuilt::{print_result, BaseChatModel, Message};
+use langgraph::prelude::RunnableConfig;
+use langgraph::prelude::*;
 use langgraph::providers::openai::OpenAIModel;
+use langgraph::runnable::{RunnableCallable, RunnableError};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
@@ -101,4 +101,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     })
 }
-

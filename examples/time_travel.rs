@@ -3,21 +3,20 @@ use std::sync::Arc;
 use serde_json::Value as JsonValue;
 
 use dotenvy::dotenv;
-use langgraph::prelude::*;
 use langgraph::checkpoint::InMemorySaver;
-use langgraph::{langgraph_state, tool};
 use langgraph::prebuilt::{
     invoke_llm, prepare_tools, print_result, tools_condition, BaseChatModel, Message, ToolNode,
 };
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::{langgraph_state, tool};
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
     let api_key =
         std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set in .env or environment");
     let api_base = std::env::var("OPENAI_API_BASE").ok();
-    let model_name =
-        std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "mimo-v2.5-pro".to_string());
+    let model_name = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "mimo-v2.5-pro".to_string());
 
     (api_key, api_base, model_name)
 }
@@ -172,10 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------
     // Fork from a specific checkpoint
     // -------------------------------------------------------
-    let fork_index = history
-        .iter()
-        .position(|s| !s.next.is_empty())
-        .unwrap_or(0);
+    let fork_index = history.iter().position(|s| !s.next.is_empty()).unwrap_or(0);
     let to_replay = &history[fork_index];
 
     let msg_count = to_replay
@@ -185,7 +181,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|a| a.len())
         .unwrap_or(0);
 
-    println!("\n--- Step 4: Fork from checkpoint [{}] ({} messages) ---\n", fork_index, msg_count);
+    println!(
+        "\n--- Step 4: Fork from checkpoint [{}] ({} messages) ---\n",
+        fork_index, msg_count
+    );
     println!("Next nodes: {:?}\n", to_replay.next);
 
     // Resume execution from this checkpoint

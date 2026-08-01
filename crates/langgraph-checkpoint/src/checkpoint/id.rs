@@ -12,7 +12,13 @@ pub fn uuid6() -> String {
 }
 
 /// Generate a deterministic task ID from checkpoint context.
-pub fn task_id(checkpoint_id: &str, namespace: &str, step: i64, name: &str, triggers: &[String]) -> String {
+pub fn task_id(
+    checkpoint_id: &str,
+    namespace: &str,
+    step: i64,
+    name: &str,
+    triggers: &[String],
+) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 

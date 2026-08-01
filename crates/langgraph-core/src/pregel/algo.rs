@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet};
-use serde_json::Value as JsonValue;
+use super::{ChannelVersions, PregelExecutableTask, PregelNode, TriggerToNodes};
 use crate::channels::Channel;
-use crate::constants::{RESUME, NULL_TASK_ID, CONFIG_KEY_SCRATCHPAD, RESERVED};
+use crate::constants::{CONFIG_KEY_SCRATCHPAD, NULL_TASK_ID, RESERVED, RESUME};
 use crate::types::PregelScratchpad;
-use super::{PregelNode, PregelExecutableTask, ChannelVersions, TriggerToNodes};
+use serde_json::Value as JsonValue;
+use std::collections::{HashMap, HashSet};
 
 /// Try to extract a numeric value (f64) from a JsonValue.
 /// Works for JsonValue::Number directly, and for JsonValue::String
@@ -101,9 +101,9 @@ pub fn prepare_next_tasks(
             })
         } else {
             // Never run before — trigger if any trigger channel is available
-            node.triggers.iter().any(|chan| {
-                channels.get(chan).is_some_and(|c| c.is_available())
-            })
+            node.triggers
+                .iter()
+                .any(|chan| channels.get(chan).is_some_and(|c| c.is_available()))
         };
 
         if !should_trigger {
@@ -124,11 +124,7 @@ pub fn prepare_next_tasks(
             .collect();
 
         // Create scratchpad for this task
-        let scratchpad = create_scratchpad(
-            null_resume,
-            &task_resume,
-            step,
-        );
+        let scratchpad = create_scratchpad(null_resume, &task_resume, step);
 
         // Inject scratchpad into config
         let mut task_config = config.clone();
@@ -160,10 +156,7 @@ pub fn prepare_next_tasks(
 ///
 /// Always returns a JSON object mapping channel names to their values,
 /// matching Python's behavior where node input is always a state dict.
-fn gather_input(
-    node: &PregelNode,
-    channels: &HashMap<String, Box<dyn Channel>>,
-) -> JsonValue {
+fn gather_input(node: &PregelNode, channels: &HashMap<String, Box<dyn Channel>>) -> JsonValue {
     let mut map = serde_json::Map::new();
     for ch in &node.channels {
         if let Some(channel) = channels.get(ch) {
@@ -241,9 +234,10 @@ pub fn apply_writes(
     // 2. Compute a single global next_version from the max of all channel versions.
     //    This mirrors Python's behavior: all channels updated in the same superstep
     //    share the same version "timestamp".
-    let max_version = channel_versions.values().max_by(|a, b| {
-        version_gt_partial(a, b)
-    }).cloned();
+    let max_version = channel_versions
+        .values()
+        .max_by(|a, b| version_gt_partial(a, b))
+        .cloned();
     let next_version = get_next_version(max_version.as_ref());
 
     // 3. Consume trigger channels (flush ephemeral/topic values).
@@ -347,9 +341,6 @@ fn version_gt_partial(a: &JsonValue, b: &JsonValue) -> std::cmp::Ordering {
 }
 
 /// Check if we should interrupt before executing the given nodes.
-pub fn should_interrupt(
-    interrupt_nodes: &HashSet<String>,
-    task_names: &[String],
-) -> bool {
+pub fn should_interrupt(interrupt_nodes: &HashSet<String>, task_names: &[String]) -> bool {
     task_names.iter().any(|n| interrupt_nodes.contains(n))
 }

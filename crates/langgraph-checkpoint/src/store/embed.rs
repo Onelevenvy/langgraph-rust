@@ -57,7 +57,10 @@ where
 
     fn embed_query(&self, text: &str) -> Result<Vec<f64>, EmbeddingError> {
         let results = (self.func)(&[text])?;
-        results.into_iter().next().ok_or_else(|| EmbeddingError::Error("no embedding returned".to_string()))
+        results
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbeddingError::Error("no embedding returned".to_string()))
     }
 }
 
@@ -72,7 +75,8 @@ pub fn get_text_at_path(obj: &serde_json::Value, path: &[&str]) -> Vec<String> {
     }
     match current {
         serde_json::Value::String(s) => vec![s.clone()],
-        serde_json::Value::Array(arr) => arr.iter()
+        serde_json::Value::Array(arr) => arr
+            .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect(),
         _ => vec![current.to_string()],

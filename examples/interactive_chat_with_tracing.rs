@@ -1,13 +1,12 @@
 use dotenvy::dotenv;
-use langgraph::prelude::*;
-use langgraph::checkpoint::InMemorySaver;
 use langgraph::checkpoint::config::RunnableConfigExt;
-use langgraph::{langgraph_state, tool, Traceable};
+use langgraph::checkpoint::InMemorySaver;
 use langgraph::prebuilt::{
-    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message,
-    ToolNode,
+    prepare_tools, print_stream, stream_llm, tools_condition, BaseChatModel, Message, ToolNode,
 };
+use langgraph::prelude::*;
 use langgraph::providers::openai::{OpenAIModel, OpenAIModelConfig};
+use langgraph::{langgraph_state, tool, Traceable};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use std::io::{self, Write};
@@ -18,7 +17,8 @@ use langgraph::tracing::TracingChatModel;
 
 fn load_openai_config() -> (String, Option<String>, String) {
     dotenv().ok();
-    let api_key = std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set in .env or environment");
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set in .env or environment");
     let api_base = std::env::var("OPENAI_API_BASE").ok();
     let model_name = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
     (api_key, api_base, model_name)
@@ -30,12 +30,14 @@ fn load_openai_config() -> (String, Option<String>, String) {
 
 #[tool("multiply", "Multiply two integers a and b")]
 fn multiply(a: i64, b: i64) -> Result<i64, String> {
-    a.checked_mul(b).ok_or_else(|| "Multiplication overflow".to_string())
+    a.checked_mul(b)
+        .ok_or_else(|| "Multiplication overflow".to_string())
 }
 
 #[tool("add", "Add two integers a and b")]
 fn add(a: i64, b: i64) -> Result<i64, String> {
-    a.checked_add(b).ok_or_else(|| "Addition overflow".to_string())
+    a.checked_add(b)
+        .ok_or_else(|| "Addition overflow".to_string())
 }
 
 #[tool("get_weather", "Get the current weather for a location")]
@@ -97,34 +99,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = tracing.store().clone();
     let bus = tracing.event_bus().clone();
 
-    graph.add_node("llm_call", move |input: JsonValue, config: RunnableConfig| {
-        let model = model_arc.clone();
-        let store = store.clone();
-        let bus = bus.clone();
-        let tool_defs = tool_defs.clone();
+    graph.add_node(
+        "llm_call",
+        move |input: JsonValue, config: RunnableConfig| {
+            let model = model_arc.clone();
+            let store = store.clone();
+            let bus = bus.clone();
+            let tool_defs = tool_defs.clone();
 
-        async move {
-            let trace_id = config.get_configurable()
-                .and_then(|c| c.get("trace_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("default")
-                .to_string();
+            async move {
+                let trace_id = config
+                    .get_configurable()
+                    .and_then(|c| c.get("trace_id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .to_string();
 
-            let tracing_model = TracingChatModel::new(
-                model.bind_tools(tool_defs),
-                store,
-                bus,
-                trace_id
-            );
+                let tracing_model =
+                    TracingChatModel::new(model.bind_tools(tool_defs), store, bus, trace_id);
 
-            stream_llm(
-                &tracing_model,
-                &input,
-                "You are a helpful assistant with math and weather tools.",
-            )
-            .await
-        }
-    })?;
+                stream_llm(
+                    &tracing_model,
+                    &input,
+                    "You are a helpful assistant with math and weather tools.",
+                )
+                .await
+            }
+        },
+    )?;
 
     let tools_node: Arc<dyn Runnable> = Arc::new(ToolNode::new(prepared.tools.clone()));
     graph.add_node("tool_node", tools_node)?;
@@ -145,14 +147,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         io::stdout().flush()?;
 
         let mut input_line = String::new();
-        if stdin.read_line(&mut input_line)? == 0 { break; }
+        if stdin.read_line(&mut input_line)? == 0 {
+            break;
+        }
         let input_line = input_line.trim();
 
         if input_line.eq_ignore_ascii_case("quit") || input_line.eq_ignore_ascii_case("exit") {
             println!("Goodbye!");
             break;
         }
-        if input_line.is_empty() { continue; }
+        if input_line.is_empty() {
+            continue;
+        }
 
         turn += 1;
         println!("\n--- Turn {} ---", turn);
@@ -163,25 +169,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Single call: trace lifecycle is automatic
         let mut config = RunnableConfig::new();
-        config.insert("configurable".to_string(), json!({
-            "thread_id": "interactive-session"
-        }));
+        config.insert(
+            "configurable".to_string(),
+            json!({
+                "thread_id": "interactive-session"
+            }),
+        );
 
-        let collected_text = tracing.run_with_tracing(
-            "interactive_chat_turn",
-            input.clone(),
-            config,
-            |config| {
+        let collected_text = tracing
+            .run_with_tracing("interactive_chat_turn", input.clone(), config, |config| {
                 let app = &app;
                 async move {
-                    let mut stream = app.astream(&input, &config, vec![StreamMode::Custom, StreamMode::Updates]);
+                    let mut stream = app.astream(
+                        &input,
+                        &config,
+                        vec![StreamMode::Custom, StreamMode::Updates],
+                    );
                     print!("Assistant: ");
                     let text = print_stream(&mut stream, false).await;
                     println!("\n");
                     json!({"messages": [{"type": "ai", "content": text}]})
                 }
-            },
-        ).await;
+            })
+            .await;
 
         let _ = collected_text;
     }

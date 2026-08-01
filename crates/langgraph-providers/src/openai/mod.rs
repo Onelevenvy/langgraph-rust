@@ -1,3 +1,3 @@
 pub mod model;
 
-pub use model::{OpenAIModel, OpenAIModelConfig, OpenAICompatModel};
+pub use model::{OpenAICompatModel, OpenAIModel, OpenAIModelConfig};

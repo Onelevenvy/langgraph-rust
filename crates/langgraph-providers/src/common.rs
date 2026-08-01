@@ -1,4 +1,4 @@
-use langgraph_prebuilt::{ContentBlock, LlmUsage, Message, MessageContent, ToolCall, ModelError};
+use langgraph_prebuilt::{ContentBlock, LlmUsage, Message, MessageContent, ModelError, ToolCall};
 
 /// Extract plain text from MessageContent.
 pub fn content_text(content: &MessageContent) -> String {

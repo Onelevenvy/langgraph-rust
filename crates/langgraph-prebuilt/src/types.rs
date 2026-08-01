@@ -1,6 +1,6 @@
-use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use std::fmt;
 
 fn default_tool_status() -> String {
     "success".to_string()
@@ -64,9 +64,7 @@ pub enum Message {
         status: String,
     },
     /// A message that removes a previous message by ID.
-    Remove {
-        id: String,
-    },
+    Remove { id: String },
 }
 
 /// Content of a message - can be a simple string or structured content blocks.
@@ -83,12 +81,8 @@ pub enum MessageContent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text {
-        text: String,
-    },
-    ImageUrl {
-        image_url: ImageUrl,
-    },
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
 }
 
 /// An image URL reference.
@@ -220,10 +214,7 @@ impl Message {
     }
 
     /// Create an AI message with thinking/reasoning content.
-    pub fn ai_with_thinking(
-        content: impl Into<String>,
-        thinking: impl Into<String>,
-    ) -> Self {
+    pub fn ai_with_thinking(content: impl Into<String>, thinking: impl Into<String>) -> Self {
         Message::Ai {
             content: MessageContent::Text(content.into()),
             tool_calls: vec![],
@@ -268,7 +259,12 @@ impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Message::Human { content, .. } => write!(f, "[Human] {}", content_text(content)),
-            Message::Ai { content, tool_calls, thinking, .. } => {
+            Message::Ai {
+                content,
+                tool_calls,
+                thinking,
+                ..
+            } => {
                 let text = content_text(content);
                 if let Some(t) = thinking {
                     write!(f, "[Thinking] {}\n[AI] {}", t, text)?;
@@ -295,7 +291,12 @@ impl fmt::Display for Message {
                 }
             }
             Message::System { content, .. } => write!(f, "[System] {}", content_text(content)),
-            Message::Tool { content, name, status, .. } => {
+            Message::Tool {
+                content,
+                name,
+                status,
+                ..
+            } => {
                 let tool_name = name.as_deref().unwrap_or("tool");
                 let text = content_text(content);
                 if status == "error" {

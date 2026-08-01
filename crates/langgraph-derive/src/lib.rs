@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute, Lit, ItemFn, ReturnType};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, ItemFn, Lit, ReturnType};
 
 /// Derive macro for StateGraph state types.
 ///
@@ -8,7 +8,7 @@ use syn::{parse_macro_input, DeriveInput, Data, Fields, Attribute, Lit, ItemFn, 
 /// a reducer function for that channel. Fields without the attribute
 /// use LastValue (default).
 ///
-/// **Robustness Check**: This macro enforces that every field must have 
+/// **Robustness Check**: This macro enforces that every field must have
 /// `#[serde(default)]` (or be an `Option` which handles missing keys gracefully).
 /// This prevents silent state loss during graph resume operations.
 #[proc_macro_derive(StateGraph, attributes(channel))]
@@ -17,11 +17,10 @@ pub fn derive_state_graph(input: TokenStream) -> TokenStream {
     impl_state_graph(&input)
 }
 
-
 /// This attribute macro:
 /// 1. Automatically adds `#[derive(serde::Serialize, serde::Deserialize, Clone, Default, StateGraph)]`.
 /// 2. Automatically injects `#[serde(default)]` on every field to ensure robustness.
-/// 
+///
 /// Usage:
 /// ```rust,ignore
 /// #[langgraph_state]
@@ -34,7 +33,7 @@ pub fn derive_state_graph(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn langgraph_state(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as syn::ItemStruct);
-    
+
     // 1. Add the "big bunch" of derives
     input.attrs.push(syn::parse_quote! {
         #[derive(serde::Serialize, serde::Deserialize, Clone, Default, langgraph::StateGraph)]
@@ -86,7 +85,7 @@ fn impl_state_graph(input: &DeriveInput) -> TokenStream {
     // For every field, ensure it has #[serde(default)]
     for field in fields {
         let field_name = field.ident.as_ref().unwrap();
-        
+
         let mut has_serde_default = false;
         for attr in &field.attrs {
             if attr.path().is_ident("serde") {
@@ -107,7 +106,9 @@ fn impl_state_graph(input: &DeriveInput) -> TokenStream {
                  to this field.",
                 field_name, name
             );
-            return syn::Error::new_spanned(field, error_msg).to_compile_error().into();
+            return syn::Error::new_spanned(field, error_msg)
+                .to_compile_error()
+                .into();
         }
     }
 
@@ -227,7 +228,10 @@ struct ToolMacroArgs {
 impl syn::parse::Parse for ToolMacroArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(Self { name: None, description: None });
+            return Ok(Self {
+                name: None,
+                description: None,
+            });
         }
         let name: Lit = input.parse()?;
         let description = if input.peek(syn::Token![,]) {
@@ -236,7 +240,10 @@ impl syn::parse::Parse for ToolMacroArgs {
         } else {
             None
         };
-        Ok(Self { name: Some(name), description })
+        Ok(Self {
+            name: Some(name),
+            description,
+        })
     }
 }
 
@@ -286,31 +293,44 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     let struct_name_str = to_camel_case(&fn_name_str);
     let struct_name = syn::Ident::new(&struct_name_str, fn_name.span());
 
-    let params: Vec<_> = func.sig.inputs.iter().filter_map(|arg| {
-        if let syn::FnArg::Typed(pat_type) = arg {
-            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
+    let params: Vec<_> = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                    return Some((pat_ident.ident.clone(), (*pat_type.ty).clone()));
+                }
             }
-        }
-        None
-    }).collect();
+            None
+        })
+        .collect();
 
-    let properties: Vec<proc_macro2::TokenStream> = params.iter().map(|(name, ty)| {
-        let name_str = name.to_string();
-        let actual_ty = if is_option(ty) { extract_type_from_option(ty) } else { ty };
-        let json_type = rust_type_to_json_type(actual_ty);
-        if let Some(d) = param_descs.get(&name_str) {
-            quote! {
-                (#name_str, serde_json::json!({"type": #json_type, "description": #d}))
+    let properties: Vec<proc_macro2::TokenStream> = params
+        .iter()
+        .map(|(name, ty)| {
+            let name_str = name.to_string();
+            let actual_ty = if is_option(ty) {
+                extract_type_from_option(ty)
+            } else {
+                ty
+            };
+            let json_type = rust_type_to_json_type(actual_ty);
+            if let Some(d) = param_descs.get(&name_str) {
+                quote! {
+                    (#name_str, serde_json::json!({"type": #json_type, "description": #d}))
+                }
+            } else {
+                quote! {
+                    (#name_str, serde_json::json!({"type": #json_type}))
+                }
             }
-        } else {
-            quote! {
-                (#name_str, serde_json::json!({"type": #json_type}))
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
-    let required: Vec<String> = params.iter()
+    let required: Vec<String> = params
+        .iter()
         .filter(|(_, ty)| !is_option(ty))
         .map(|(name, _)| name.to_string())
         .collect();
@@ -318,7 +338,7 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     let extractions: Vec<proc_macro2::TokenStream> = params.iter().map(|(name, ty)| {
         let name_str = name.to_string();
         let err_invalid = format!("invalid parameter '{}': {{}}", name_str);
-        
+
         if is_option(ty) {
             quote! {
                 let #name: #ty = match args.get(#name_str) {
@@ -346,7 +366,10 @@ fn impl_tool_macro(name_lit: &Option<Lit>, desc_lit: &Option<Lit>, func: &ItemFn
     let is_result_return = match &func.sig.output {
         ReturnType::Type(_, ty) => {
             if let syn::Type::Path(type_path) = ty.as_ref() {
-                type_path.path.segments.last()
+                type_path
+                    .path
+                    .segments
+                    .last()
                     .map(|s| s.ident == "Result")
                     .unwrap_or(false)
             } else {
@@ -471,13 +494,18 @@ fn to_camel_case(s: &str) -> String {
 
 fn rust_type_to_json_type(ty: &syn::Type) -> &'static str {
     if let syn::Type::Path(type_path) = ty {
-        let type_name = type_path.path.segments.last()
+        let type_name = type_path
+            .path
+            .segments
+            .last()
             .map(|s| s.ident.to_string())
             .unwrap_or_default();
 
         match type_name.as_str() {
             "String" | "str" => "string",
-            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize" => "integer",
+            "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize" => {
+                "integer"
+            }
             "f32" | "f64" => "number",
             "bool" => "boolean",
             _ => "string", // fallback

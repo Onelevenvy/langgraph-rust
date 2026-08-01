@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use crate::error::CheckpointError;
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
-use crate::error::CheckpointError;
+use std::collections::HashMap;
 
 /// Cache namespace: tuple of namespace segments
 pub type CacheNamespace = Vec<String>;
@@ -13,7 +13,10 @@ pub type FullKey = (CacheNamespace, String);
 #[async_trait]
 pub trait BaseCache: Send + Sync {
     /// Get cached values by keys
-    fn get(&self, keys: &[(CacheNamespace, String)]) -> Result<HashMap<FullKey, JsonValue>, CheckpointError>;
+    fn get(
+        &self,
+        keys: &[(CacheNamespace, String)],
+    ) -> Result<HashMap<FullKey, JsonValue>, CheckpointError>;
 
     /// Set cached values with optional TTL (in seconds)
     fn set(&self, pairs: &[(FullKey, JsonValue, Option<i64>)]) -> Result<(), CheckpointError>;
@@ -23,11 +26,17 @@ pub trait BaseCache: Send + Sync {
 
     // Async mirrors
 
-    async fn aget(&self, keys: Vec<(CacheNamespace, String)>) -> Result<HashMap<FullKey, JsonValue>, CheckpointError> {
+    async fn aget(
+        &self,
+        keys: Vec<(CacheNamespace, String)>,
+    ) -> Result<HashMap<FullKey, JsonValue>, CheckpointError> {
         self.get(&keys)
     }
 
-    async fn aset(&self, pairs: Vec<(FullKey, JsonValue, Option<i64>)>) -> Result<(), CheckpointError> {
+    async fn aset(
+        &self,
+        pairs: Vec<(FullKey, JsonValue, Option<i64>)>,
+    ) -> Result<(), CheckpointError> {
         self.set(&pairs)
     }
 

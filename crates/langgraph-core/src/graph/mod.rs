@@ -1,8 +1,8 @@
-pub mod state;
 pub mod branch;
-pub mod node;
 pub mod message;
+pub mod node;
+pub mod state;
 
-pub use state::{StateGraph, CompiledStateGraph, GraphError, CompileBuilder};
 pub use branch::BranchSpec;
 pub use node::StateNodeSpec;
+pub use state::{CompileBuilder, CompiledStateGraph, GraphError, StateGraph};

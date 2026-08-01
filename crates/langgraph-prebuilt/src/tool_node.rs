@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
 use langgraph::runnable::{Runnable, RunnableError};
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
 
 use crate::traits::{BaseTool, ToolError};
 use crate::types::{Message, ToolCall};
@@ -25,7 +25,8 @@ enum ToolCallResult {
 }
 
 /// Error message templates for tool invocation failures.
-const INVALID_TOOL_NAME_ERROR: &str = "Error: {requested_tool} is not a valid tool, try one of [{available_tools}].";
+const INVALID_TOOL_NAME_ERROR: &str =
+    "Error: {requested_tool} is not a valid tool, try one of [{available_tools}].";
 const TOOL_CALL_ERROR: &str = "Error: {error}\n Please fix your mistakes.";
 const TOOL_EXECUTION_ERROR: &str = "Error executing tool '{tool_name}' with kwargs {tool_kwargs} with error:\n {error}\n Please fix the error and try again.";
 
@@ -92,7 +93,11 @@ impl ToolNode {
 
 #[async_trait]
 impl Runnable for ToolNode {
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         // Use tokio runtime for sync invocation
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => handle.block_on(self.ainvoke(input, config)),
@@ -104,7 +109,11 @@ impl Runnable for ToolNode {
         }
     }
 
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let tool_calls = Self::extract_tool_calls(input);
 
         if tool_calls.is_empty() {
@@ -153,7 +162,9 @@ impl Runnable for ToolNode {
                                 if let Some(update) = obj.get("update") {
                                     if let Some(update_obj) = update.as_object() {
                                         // Extract messages from update, fix up tool_call_id
-                                        if let Some(JsonValue::Array(msgs)) = update_obj.get("messages") {
+                                        if let Some(JsonValue::Array(msgs)) =
+                                            update_obj.get("messages")
+                                        {
                                             for msg in msgs {
                                                 let mut msg = msg.clone();
                                                 // Fix up tool_call_id in each message
@@ -187,9 +198,13 @@ impl Runnable for ToolNode {
 
                         let content = match output {
                             JsonValue::String(s) => s,
-                            other => serde_json::to_string_pretty(&other).unwrap_or_else(|_| format!("{:?}", other)),
+                            other => serde_json::to_string_pretty(&other)
+                                .unwrap_or_else(|_| format!("{:?}", other)),
                         };
-                        Ok(ToolCallResult::Message(Message::tool_result(tool_call_id, content)))
+                        Ok(ToolCallResult::Message(Message::tool_result(
+                            tool_call_id,
+                            content,
+                        )))
                     }
                     Err(crate::traits::ToolError::Interrupt(interrupt)) => {
                         Err(crate::traits::ToolError::Interrupt(interrupt))
@@ -198,9 +213,15 @@ impl Runnable for ToolNode {
                         if handle_errors {
                             let error_msg = TOOL_EXECUTION_ERROR
                                 .replace("{tool_name}", &tool_name)
-                                .replace("{tool_kwargs}", &serde_json::to_string(&tc.args).unwrap_or_default())
+                                .replace(
+                                    "{tool_kwargs}",
+                                    &serde_json::to_string(&tc.args).unwrap_or_default(),
+                                )
                                 .replace("{error}", &e.to_string());
-                            Ok(ToolCallResult::Message(Message::tool_error(tool_call_id, error_msg)))
+                            Ok(ToolCallResult::Message(Message::tool_error(
+                                tool_call_id,
+                                error_msg,
+                            )))
                         } else {
                             Err(e)
                         }
@@ -217,13 +238,23 @@ impl Runnable for ToolNode {
             let msg_result = result.map_err(|e| RunnableError::Node(e.to_string()))?;
             match msg_result {
                 Ok(ToolCallResult::Message(msg)) => {
-                    messages.push(serde_json::to_value(msg).map_err(|e| RunnableError::Node(e.to_string()))?);
+                    messages.push(
+                        serde_json::to_value(msg)
+                            .map_err(|e| RunnableError::Node(e.to_string()))?,
+                    );
                 }
-                Ok(ToolCallResult::Command { tool_call_id, extra_messages, state_update }) => {
+                Ok(ToolCallResult::Command {
+                    tool_call_id,
+                    extra_messages,
+                    state_update,
+                }) => {
                     if extra_messages.is_empty() {
                         // No messages in Command — add a default tool response
                         let default_msg = Message::tool_result(tool_call_id, "Command processed");
-                        messages.push(serde_json::to_value(default_msg).map_err(|e| RunnableError::Node(e.to_string()))?);
+                        messages.push(
+                            serde_json::to_value(default_msg)
+                                .map_err(|e| RunnableError::Node(e.to_string()))?,
+                        );
                     } else {
                         messages.extend(extra_messages);
                     }
@@ -260,7 +291,6 @@ impl Runnable for ToolNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_extract_tool_calls() {

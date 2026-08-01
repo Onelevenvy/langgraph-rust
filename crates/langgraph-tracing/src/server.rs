@@ -104,9 +104,9 @@ pub async fn start(
 
     let app = if let Some(dir) = static_dir {
         let dir_owned = dir.to_string();
-        let serve_dir = tower_http::services::ServeDir::new(&dir_owned)
-            .not_found_service(tower_http::services::ServeDir::new(&dir_owned)
-                .fallback(axum::routing::any(move || {
+        let serve_dir = tower_http::services::ServeDir::new(&dir_owned).not_found_service(
+            tower_http::services::ServeDir::new(&dir_owned).fallback(axum::routing::any(
+                move || {
                     let d = dir_owned.clone();
                     async move {
                         match tokio::fs::read_to_string(format!("{}/index.html", d)).await {
@@ -114,7 +114,9 @@ pub async fn start(
                             Err(_) => axum::http::StatusCode::NOT_FOUND.into_response(),
                         }
                     }
-                })));
+                },
+            )),
+        );
         api_routes.merge(Router::new().fallback_service(serve_dir))
     } else {
         api_routes

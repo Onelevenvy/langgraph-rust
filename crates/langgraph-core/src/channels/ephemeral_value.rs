@@ -1,7 +1,7 @@
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
 
 /// Stores a value for exactly one step, then clears.
 ///
@@ -60,10 +60,7 @@ impl Channel for EphemeralValue {
     }
 
     fn get(&self) -> Result<JsonValue, ChannelError> {
-        self.value
-            .read()
-            .clone()
-            .ok_or(ChannelError::EmptyChannel)
+        self.value.read().clone().ok_or(ChannelError::EmptyChannel)
     }
 
     fn consume(&self) -> bool {
@@ -111,7 +108,8 @@ mod tests {
     #[test]
     fn test_ephemeral_no_guard() {
         let ch = EphemeralValue::new("branch", false);
-        ch.update(&[serde_json::json!(1), serde_json::json!(2)]).unwrap();
+        ch.update(&[serde_json::json!(1), serde_json::json!(2)])
+            .unwrap();
         assert_eq!(ch.get().unwrap(), serde_json::json!(2));
     }
 

@@ -1,5 +1,5 @@
-use std::any::Any;
 use crate::error::SerdeError;
+use std::any::Any;
 
 /// Trait for typed serialization. Mirrors Python's SerializerProtocol.
 pub trait SerializerProtocol: Send + Sync {

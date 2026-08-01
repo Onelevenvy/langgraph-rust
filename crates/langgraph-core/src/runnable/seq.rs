@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use async_trait::async_trait;
-use serde_json::Value as JsonValue;
-use langgraph_checkpoint::config::RunnableConfig;
 use super::base::{Runnable, RunnableError};
+use async_trait::async_trait;
+use langgraph_checkpoint::config::RunnableConfig;
+use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Chains multiple `Runnable`s sequentially — output of step N becomes input of step N+1.
 ///
@@ -47,7 +47,11 @@ impl RunnableSeq {
 
 #[async_trait]
 impl Runnable for RunnableSeq {
-    fn invoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    fn invoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let mut current = input.clone();
         for step in &self.steps {
             current = step.invoke(&current, config)?;
@@ -55,7 +59,11 @@ impl Runnable for RunnableSeq {
         Ok(current)
     }
 
-    async fn ainvoke(&self, input: &JsonValue, config: &RunnableConfig) -> Result<JsonValue, RunnableError> {
+    async fn ainvoke(
+        &self,
+        input: &JsonValue,
+        config: &RunnableConfig,
+    ) -> Result<JsonValue, RunnableError> {
         let mut current = input.clone();
         for step in &self.steps {
             current = step.ainvoke(&current, config).await?;

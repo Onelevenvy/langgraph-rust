@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use crate::config::RunnableConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use crate::config::RunnableConfig;
+use std::collections::HashMap;
 
 /// Channel version can be a string, int, or float
 pub type ChannelVersion = JsonValue;
@@ -71,8 +71,8 @@ pub struct CheckpointTuple {
 impl Checkpoint {
     /// Create an empty checkpoint
     pub fn empty() -> Self {
-        use chrono::Utc;
         use crate::checkpoint::id::uuid6;
+        use chrono::Utc;
 
         Self {
             v: LATEST_VERSION,

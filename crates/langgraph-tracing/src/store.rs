@@ -96,19 +96,12 @@ impl TracingStore for InMemoryTracingStore {
         let offset = filter.offset.unwrap_or(0);
         let limit = filter.limit.unwrap_or(summaries.len());
 
-        summaries
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect()
+        summaries.into_iter().skip(offset).take(limit).collect()
     }
 
     fn add_span(&self, span: Span) {
         let mut spans = self.spans.write().unwrap();
-        spans
-            .entry(span.trace_id.clone())
-            .or_default()
-            .push(span);
+        spans.entry(span.trace_id.clone()).or_default().push(span);
     }
 
     fn update_span(&self, span: Span) {

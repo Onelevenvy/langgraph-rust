@@ -1,7 +1,7 @@
+use super::base::Channel;
+use langgraph_checkpoint::error::ChannelError;
 use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
-use langgraph_checkpoint::error::ChannelError;
-use super::base::Channel;
 
 /// PubSub topic channel.
 ///
@@ -125,7 +125,8 @@ mod tests {
     #[test]
     fn test_topic_array_update() {
         let ch = Topic::new("tasks", true);
-        ch.update(&[serde_json::json!(["a", "b"]), serde_json::json!(["c"])]).unwrap();
+        ch.update(&[serde_json::json!(["a", "b"]), serde_json::json!(["c"])])
+            .unwrap();
         assert_eq!(ch.get().unwrap(), serde_json::json!(["a", "b", "c"]));
     }
 }

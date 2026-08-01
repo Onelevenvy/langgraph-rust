@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde_json::Value as JsonValue;
+use std::collections::HashMap;
 
 /// RunnableConfig - the universal configuration type for all LangGraph operations.
 ///
@@ -68,7 +68,9 @@ pub fn merge_configs(base: &RunnableConfig, override_config: &RunnableConfig) ->
     let mut result = base.clone();
     for (k, v) in override_config {
         if k == "configurable" {
-            if let (Some(base_conf), Some(override_conf)) = (base.get("configurable"), v.as_object()) {
+            if let (Some(base_conf), Some(override_conf)) =
+                (base.get("configurable"), v.as_object())
+            {
                 if let Some(mut merged) = base_conf.as_object().cloned() {
                     for (ck, cv) in override_conf {
                         merged.insert(ck.clone(), cv.clone());
@@ -92,12 +94,20 @@ pub fn patch_config(
 ) -> RunnableConfig {
     let mut result = config.clone();
     if let Some(tags) = tags {
-        result.insert("tags".to_string(), JsonValue::Array(
-            tags.iter().map(|t| JsonValue::String(t.to_string())).collect()
-        ));
+        result.insert(
+            "tags".to_string(),
+            JsonValue::Array(
+                tags.iter()
+                    .map(|t| JsonValue::String(t.to_string()))
+                    .collect(),
+            ),
+        );
     }
     if let Some(metadata) = metadata {
-        result.insert("metadata".to_string(), serde_json::to_value(metadata).unwrap_or_default());
+        result.insert(
+            "metadata".to_string(),
+            serde_json::to_value(metadata).unwrap_or_default(),
+        );
     }
     if let Some(callbacks) = callbacks {
         result.insert("callbacks".to_string(), callbacks.clone());
@@ -113,16 +123,22 @@ mod tests {
     fn test_merge_configs() {
         let mut base = RunnableConfig::new();
         base.insert("tags".to_string(), serde_json::json!(["tag1"]));
-        base.insert("configurable".to_string(), serde_json::json!({
-            "thread_id": "t1",
-            "key1": "val1",
-        }));
+        base.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "t1",
+                "key1": "val1",
+            }),
+        );
 
         let mut override_config = RunnableConfig::new();
-        override_config.insert("configurable".to_string(), serde_json::json!({
-            "thread_id": "t2",
-            "key2": "val2",
-        }));
+        override_config.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "t2",
+                "key2": "val2",
+            }),
+        );
 
         let merged = merge_configs(&base, &override_config);
         let conf = merged.get("configurable").unwrap();
@@ -134,10 +150,13 @@ mod tests {
     #[test]
     fn test_config_ext() {
         let mut config = RunnableConfig::new();
-        config.insert("configurable".to_string(), serde_json::json!({
-            "thread_id": "t1",
-            "checkpoint_id": "cp1",
-        }));
+        config.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "t1",
+                "checkpoint_id": "cp1",
+            }),
+        );
 
         assert_eq!(config.get_thread_id(), Some("t1"));
         assert_eq!(config.get_checkpoint_id(), Some("cp1"));

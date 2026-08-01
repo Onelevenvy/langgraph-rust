@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 
 use langgraph::checkpoint::BaseCheckpointSaver;
-use langgraph::checkpoint::{
-    ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointSource,
-};
+use langgraph::checkpoint::{ChannelVersions, Checkpoint, CheckpointMetadata, CheckpointSource};
 use langgraph::prelude::RunnableConfig;
 use langgraph::sqlite::SqliteSaver;
 use serde_json::Value as JsonValue;
@@ -83,7 +81,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let history = saver.alist(Some(&cfg), None, None, None).await?;
     println!("history length = {}", history.len());
     for (i, t) in history.iter().enumerate() {
-        println!("  [{}] id={} step={:?}", i, t.checkpoint.id, t.metadata.step);
+        println!(
+            "  [{}] id={} step={:?}",
+            i, t.checkpoint.id, t.metadata.step
+        );
     }
 
     // Store pending writes for the latest checkpoint

@@ -1,7 +1,7 @@
-use std::any::Any;
-use serde_json::Value as JsonValue;
-use crate::error::SerdeError;
 use super::base::SerializerProtocol;
+use crate::error::SerdeError;
+use serde_json::Value as JsonValue;
+use std::any::Any;
 
 /// Msgpack extension type codes, matching Python's jsonplus.py
 pub const EXT_CONSTRUCTOR_SINGLE_ARG: i8 = 0;
@@ -84,9 +84,10 @@ impl SerializerProtocol for JsonPlusSerializer {
         // For types implementing Serialize, try msgpack first, then JSON
         // Since we can't check Serialize trait at runtime with dyn Any,
         // we default to JSON for known types
-        Err(SerdeError::NotSerializable(
-            format!("Type not directly serializable through Any: {:?}", obj.type_id())
-        ))
+        Err(SerdeError::NotSerializable(format!(
+            "Type not directly serializable through Any: {:?}",
+            obj.type_id()
+        )))
     }
 
     fn loads_typed(&self, tag: &str, data: &[u8]) -> Result<Box<dyn Any>, SerdeError> {
@@ -99,15 +100,13 @@ impl SerializerProtocol for JsonPlusSerializer {
                 Ok(Box::new(val))
             }
             TAG_MSGPACK => {
-                let val: JsonValue = rmp_serde::from_slice(data)
-                    .map_err(|e| SerdeError::Msgpack(e.to_string()))?;
+                let val: JsonValue =
+                    rmp_serde::from_slice(data).map_err(|e| SerdeError::Msgpack(e.to_string()))?;
                 Ok(Box::new(val))
             }
-            TAG_PICKLE => {
-                Err(SerdeError::NotSerializable(
-                    "Pickle deserialization is not supported in Rust".to_string()
-                ))
-            }
+            TAG_PICKLE => Err(SerdeError::NotSerializable(
+                "Pickle deserialization is not supported in Rust".to_string(),
+            )),
             _ => Err(SerdeError::UnknownTag(tag.to_string())),
         }
     }
