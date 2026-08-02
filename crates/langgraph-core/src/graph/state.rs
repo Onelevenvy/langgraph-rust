@@ -1429,6 +1429,7 @@ impl CompiledStateGraph {
         let mut step: u64 = 0;
         let max_steps = config.get_recursion_limit().unwrap_or(self.recursion_limit);
         let mut last_output = JsonValue::Null;
+        let mut ran_super_step = false;
         let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
 
         // Version offset: ensures new trigger writes have strictly higher
@@ -1718,18 +1719,25 @@ impl CompiledStateGraph {
             }
 
             // ── Streaming: emit values after writes ──────────────────────────
-            if let Some(s) = stream {
+            // In streaming mode, compute `output` here (reusing the emitted
+            // value when stream_mode="values"). In non-streaming mode defer
+            // the read_channels deep clone — it clones every output channel's
+            // value each super-step, the dominant per-step cost at large
+            // histories — to the two consumers below: the interrupt_after
+            // return and the loop exit.
+            let output: JsonValue = if let Some(s) = stream {
                 if s.has(&StreamMode::Values) {
                     let keys = output_channel_keys(&channels);
-                    let _ =
-                        s.tx.send(StreamPart::values(vec![], read_channels(&channels, &keys)))
-                            .await;
+                    let v = read_channels(&channels, &keys);
+                    let _ = s.tx.send(StreamPart::values(vec![], v.clone())).await;
+                    v
+                } else {
+                    let keys = output_channel_keys(&channels);
+                    read_channels(&channels, &keys)
                 }
-            }
-
-            // Read output
-            let keys = output_channel_keys(&channels);
-            let output = read_channels(&channels, &keys);
+            } else {
+                JsonValue::Null
+            };
             if !output.is_null() {
                 last_output = output;
             }
@@ -1738,11 +1746,31 @@ impl CompiledStateGraph {
             if !self.interrupt_after.is_empty() {
                 let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
                 if task_names.iter().any(|n| self.interrupt_after.contains(n)) {
+                    // Non-streaming deferred the read; materialize it now.
+                    if stream.is_none() {
+                        let keys = output_channel_keys(&channels);
+                        let output = read_channels(&channels, &keys);
+                        if !output.is_null() {
+                            last_output = output;
+                        }
+                    }
                     return Ok(last_output);
                 }
             }
 
             step += 1;
+            ran_super_step = true;
+        }
+
+        // Non-streaming: materialize the final output once at loop exit. If no
+        // super-step ran (empty graph / fork with no resume), keep the original
+        // Null result rather than reading the untouched initial state.
+        if stream.is_none() && ran_super_step {
+            let keys = output_channel_keys(&channels);
+            let output = read_channels(&channels, &keys);
+            if !output.is_null() {
+                last_output = output;
+            }
         }
 
         Ok(last_output)
