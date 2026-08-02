@@ -70,6 +70,7 @@ dotenvy = "0.15.7"
 uuid = { workspace = true }
 
 [dev-dependencies]
+mimalloc = "0.1"
 langgraph = { path = ".", features = ["full"] }
 langgraph-prebuilt = { workspace = true }
 langgraph-providers = { workspace = true }

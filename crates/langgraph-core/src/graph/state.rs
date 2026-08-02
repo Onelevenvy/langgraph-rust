@@ -482,6 +482,11 @@ impl CompiledStateGraph {
     }
 
     /// Save a checkpoint from current channel state.
+    ///
+    /// `previous_versions` holds the channel versions as of the start of this
+    /// run; only channels whose version moved since then are passed to the
+    /// saver as `new_versions`, so persistent savers can write delta blobs
+    /// instead of re-encoding every channel on every super-step.
     fn save_checkpoint(
         &self,
         checkpointer: &Arc<dyn BaseCheckpointSaver>,
@@ -489,6 +494,7 @@ impl CompiledStateGraph {
         channels: &HashMap<String, Box<dyn Channel>>,
         channel_versions: &ChannelVersions,
         versions_seen: &HashMap<String, HashMap<String, JsonValue>>,
+        previous_versions: &ChannelVersions,
     ) -> Option<RunnableConfig> {
         use chrono::Utc;
         use langgraph_checkpoint::checkpoint::id::uuid6;
@@ -509,9 +515,17 @@ impl CompiledStateGraph {
             updated_channels: None,
         };
 
+        // Delta vs. the versions this run started from: only channels whose
+        // version changed since then need new blob rows.
+        let new_versions: ChannelVersions = channel_versions
+            .iter()
+            .filter(|(k, v)| previous_versions.get(k.as_str()) != Some(*v))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         let metadata = CheckpointMetadata::default();
         checkpointer
-            .put(config, &checkpoint, &metadata, channel_versions)
+            .put(config, &checkpoint, &metadata, &new_versions)
             .ok()
     }
 
@@ -789,6 +803,7 @@ impl CompiledStateGraph {
             .as_ref()
             .map(|s| s.checkpoint.versions_seen.clone())
             .unwrap_or_default();
+        let previous_versions = channel_versions.clone();
 
         // Apply the update values to channels
         if let Some(obj) = values.as_object() {
@@ -817,6 +832,7 @@ impl CompiledStateGraph {
             &channels,
             &channel_versions,
             &versions_seen,
+            &previous_versions,
         );
 
         Ok(config.clone())
@@ -1405,6 +1421,10 @@ impl CompiledStateGraph {
                 )
             };
 
+        // Baseline for incremental checkpoint writes: the versions as of the
+        // start of this run. Only channels that move past these get blob rows.
+        let previous_versions = channel_versions.clone();
+
         // BSP loop counters
         let mut step: u64 = 0;
         let max_steps = config.get_recursion_limit().unwrap_or(self.recursion_limit);
@@ -1528,6 +1548,7 @@ impl CompiledStateGraph {
                             &channels,
                             &channel_versions,
                             &versions_seen,
+                            &previous_versions,
                         ) {
                             config = new_config;
                         }
@@ -1600,6 +1621,7 @@ impl CompiledStateGraph {
                             &channels,
                             &channel_versions,
                             &versions_seen,
+                            &previous_versions,
                         ) {
                             config = new_config;
                         }
@@ -1683,9 +1705,14 @@ impl CompiledStateGraph {
 
             // Save "loop" checkpoint after each completed super-step
             if let Some(ref cp) = self.checkpointer {
-                if let Some(new_config) =
-                    self.save_checkpoint(cp, &config, &channels, &channel_versions, &versions_seen)
-                {
+                if let Some(new_config) = self.save_checkpoint(
+                    cp,
+                    &config,
+                    &channels,
+                    &channel_versions,
+                    &versions_seen,
+                    &previous_versions,
+                ) {
                     config = new_config;
                 }
             }

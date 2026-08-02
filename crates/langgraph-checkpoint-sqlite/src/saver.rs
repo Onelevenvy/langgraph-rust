@@ -341,14 +341,13 @@ impl SqliteSaver {
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
             let mut tuple = Self::row_to_tuple(&row)?;
-            // Reconcile channel values from blobs.
+            // Merge blob values (version-joined) over the row's channel_values
+            // (see aget_tuple for the rationale).
             let thread_id = row.get::<String, _>("thread_id");
             let ns = row.get::<String, _>("checkpoint_ns");
             let cid = tuple.checkpoint.id.clone();
             let blob_values = self.load_blobs(&thread_id, &ns, &cid).await?;
-            if !blob_values.is_empty() {
-                tuple.checkpoint.channel_values = blob_values;
-            }
+            tuple.checkpoint.channel_values.extend(blob_values);
             tuple.pending_writes = Some(self.load_writes(&thread_id, &ns, &cid).await?);
             results.push(tuple);
         }
@@ -517,10 +516,12 @@ impl BaseCheckpointSaver for SqliteSaver {
 
         let mut tuple = Self::row_to_tuple(&row)?;
         let cid = tuple.checkpoint.id.clone();
+        // Blob rows are version-addressed and written incrementally, so the
+        // join in SELECT_BLOBS_SQL resolves every channel's value regardless
+        // of which checkpoint created the blob. Merge (not replace) so values
+        // still resolve even if a blob row is ever missing.
         let blob_values = self.load_blobs(thread_id, checkpoint_ns, &cid).await?;
-        if !blob_values.is_empty() {
-            tuple.checkpoint.channel_values = blob_values;
-        }
+        tuple.checkpoint.channel_values.extend(blob_values);
         tuple.pending_writes = Some(self.load_writes(thread_id, checkpoint_ns, &cid).await?);
         Ok(Some(tuple))
     }
@@ -548,8 +549,11 @@ impl BaseCheckpointSaver for SqliteSaver {
 
         let next_config = Self::make_config(thread_id, checkpoint_ns, &checkpoint.id);
 
-        // Strip channel_values from the JSON checkpoint payload to avoid
-        // duplicating them in the row body — they live in checkpoint_blobs.
+        // Strip channel_values from the JSON checkpoint payload — they live in
+        // checkpoint_blobs. Blob rows are keyed by (channel, version) and are
+        // written incrementally (only channels in `new_versions`), so on load
+        // every channel's value resolves through the version join regardless
+        // of which checkpoint wrote the blob.
         let mut checkpoint_value = serde_json::to_value(checkpoint)
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
         if let Some(obj) = checkpoint_value.as_object_mut() {
@@ -963,6 +967,85 @@ mod tests {
         let earlier = saver.aget_tuple(&cfg_cp1).await.unwrap().unwrap();
         assert_eq!(
             earlier.checkpoint.channel_values.get("counter"),
+            Some(&JsonValue::Number(1.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_blob_writes() {
+        // cp1: channels a and b both written at version 1.
+        let saver = fresh_saver().await;
+        let cfg = config_for("thread-INC");
+        let mut cp1 = Checkpoint::empty();
+        cp1.channel_values
+            .insert("a".into(), JsonValue::Number(1.into()));
+        cp1.channel_values
+            .insert("b".into(), JsonValue::Number(1.into()));
+        cp1.channel_versions
+            .insert("a".into(), JsonValue::String("1".into()));
+        cp1.channel_versions
+            .insert("b".into(), JsonValue::String("1".into()));
+        let mut versions1: ChannelVersions = HashMap::new();
+        versions1.insert("a".into(), JsonValue::String("1".into()));
+        versions1.insert("b".into(), JsonValue::String("1".into()));
+        let next1 = saver
+            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &versions1)
+            .await
+            .unwrap();
+
+        // cp2: only channel a is updated — new_versions carries just the delta.
+        let mut cp2 = Checkpoint::empty();
+        cp2.channel_values
+            .insert("a".into(), JsonValue::Number(2.into()));
+        cp2.channel_values
+            .insert("b".into(), JsonValue::Number(1.into()));
+        cp2.channel_versions
+            .insert("a".into(), JsonValue::String("2".into()));
+        cp2.channel_versions
+            .insert("b".into(), JsonValue::String("1".into()));
+        let mut versions2: ChannelVersions = HashMap::new();
+        versions2.insert("a".into(), JsonValue::String("2".into()));
+        saver
+            .aput(&next1, &cp2, &CheckpointMetadata::default(), &versions2)
+            .await
+            .unwrap();
+
+        // Blob rows are keyed by (channel, version): cp2 only adds a@2, so
+        // the table holds exactly a@1, b@1, a@2 (a full rewrite would add b@2).
+        let blob_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM checkpoint_blobs WHERE thread_id = 'thread-INC'",
+        )
+        .fetch_one(&saver.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            blob_count, 3,
+            "expected blobs a@1, b@1, a@2, got {blob_count}"
+        );
+
+        // cp2 reads back both channels: a@2 via cp2's blob, b@1 via the
+        // version-addressed blob written by cp1 (b's version never moved).
+        let cfg_cp2 = config_with_id("thread-INC", &cp2.id);
+        let tuple = saver.aget_tuple(&cfg_cp2).await.unwrap().unwrap();
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("a"),
+            Some(&JsonValue::Number(2.into()))
+        );
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&JsonValue::Number(1.into()))
+        );
+
+        // cp1 remains fully readable (older rows rely on blobs, and b@1 still
+        // matches cp2's join as well since b's version never moved).
+        let cfg_cp1 = config_with_id("thread-INC", &cp1.id);
+        let earlier = saver.aget_tuple(&cfg_cp1).await.unwrap().unwrap();
+        assert_eq!(
+            earlier.checkpoint.channel_values.get("a"),
+            Some(&JsonValue::Number(1.into()))
+        );
+        assert_eq!(
+            earlier.checkpoint.channel_values.get("b"),
             Some(&JsonValue::Number(1.into()))
         );
     }
