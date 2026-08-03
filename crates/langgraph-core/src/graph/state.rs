@@ -6,6 +6,7 @@ use crate::pregel::algo::{apply_writes, prepare_next_tasks};
 use crate::pregel::io::{map_command, map_input, read_channels};
 use crate::pregel::{
     channels_from_checkpoint, ChannelVersions, PregelExecutableTask, PregelNode, PregelRunner,
+    TriggerToNodes,
 };
 use crate::runnable::{IntoNodeFunction, Runnable, RunnableError};
 use crate::stream::StreamPart;
@@ -307,12 +308,27 @@ impl StateGraph {
             .map(|(k, c)| (k.clone(), c.clone_channel()))
             .collect();
 
+        // Build the PregelNode specs and trigger index once here — they are pure
+        // functions of the immutable fields above, so caching them on the struct
+        // removes the per-invocation rebuild in run_pregel_inner (measured
+        // ~1.4ms at 1000 nodes, see the `pregel_nodes` field docs).
+        let pregel_nodes = build_pregel_nodes(
+            &self.nodes,
+            &self.edges,
+            &self.waiting_edges,
+            &self.branches,
+            &channels,
+        );
+        let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
+
         Ok(CompiledStateGraph {
             nodes: self.nodes.clone(),
             edges: self.edges.clone(),
             waiting_edges: self.waiting_edges.clone(),
             branches: self.branches.clone(),
             channels,
+            pregel_nodes,
+            trigger_to_nodes,
             checkpointer,
             cache,
             store,
@@ -439,6 +455,13 @@ pub struct CompiledStateGraph {
     waiting_edges: HashSet<WaitingEdge>,
     branches: HashMap<String, HashMap<String, BranchSpec>>,
     channels: HashMap<String, Box<dyn Channel>>,
+    /// PregelNode specs, built once at compile time. `build_pregel_nodes` is a
+    /// pure function of the fields above (all immutable after `compile`), so
+    /// rebuilding it on every invocation was pure waste — at 1000 nodes it was
+    /// ~1.4ms/invoke (~1/3 of a no-op chain's runtime). See `run_pregel_inner`.
+    pregel_nodes: HashMap<String, PregelNode>,
+    /// Reverse index channel -> [triggered nodes], derived from `pregel_nodes`.
+    trigger_to_nodes: TriggerToNodes,
     checkpointer: Option<Arc<dyn BaseCheckpointSaver>>,
     #[allow(dead_code)]
     cache: Option<Arc<dyn BaseCache>>,
@@ -617,15 +640,9 @@ impl CompiledStateGraph {
             }
         }
 
-        // Build PregelNode specs and prepare next tasks
-        let pregel_nodes = build_pregel_nodes(
-            &self.nodes,
-            &self.edges,
-            &self.waiting_edges,
-            &self.branches,
-            &self.channels,
-        );
-        let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
+        // Cached PregelNode specs (built once at compile time) and next tasks
+        let pregel_nodes = &self.pregel_nodes;
+        let trigger_to_nodes = &self.trigger_to_nodes;
 
         let step = 0u64;
         let checkpoint_id = format!("{:032}", step);
@@ -636,12 +653,12 @@ impl CompiledStateGraph {
             .unwrap_or_default();
 
         let mut tasks = prepare_next_tasks(
-            &pregel_nodes,
+            pregel_nodes,
             &channels,
             config,
             step,
             &mut versions_seen,
-            &trigger_to_nodes,
+            trigger_to_nodes,
             None,
             &checkpoint_id,
             &pending_writes,
@@ -678,7 +695,7 @@ impl CompiledStateGraph {
             &tasks,
             &mut versions_seen,
             &mut channel_versions,
-            &trigger_to_nodes,
+            trigger_to_nodes,
             &next_version,
             None,
         );
@@ -872,15 +889,9 @@ impl CompiledStateGraph {
 
         let mut snapshots = Vec::new();
 
-        // Build PregelNode specs for task preparation
-        let pregel_nodes = build_pregel_nodes(
-            &self.nodes,
-            &self.edges,
-            &self.waiting_edges,
-            &self.branches,
-            &self.channels,
-        );
-        let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
+        // Cached PregelNode specs (built once at compile time)
+        let pregel_nodes = &self.pregel_nodes;
+        let trigger_to_nodes = &self.trigger_to_nodes;
 
         for saved in &tuples {
             // Reconstruct channels from checkpoint
@@ -934,12 +945,12 @@ impl CompiledStateGraph {
                 .unwrap_or_default();
 
             let tasks = prepare_next_tasks(
-                &pregel_nodes,
+                pregel_nodes,
                 &channels,
                 &RunnableConfig::new(),
                 0,
                 &mut versions_seen,
-                &trigger_to_nodes,
+                trigger_to_nodes,
                 None,
                 &checkpoint_id,
                 &pending_writes,
@@ -1004,6 +1015,8 @@ impl Clone for CompiledStateGraph {
             waiting_edges: self.waiting_edges.clone(),
             branches,
             channels,
+            pregel_nodes: self.pregel_nodes.clone(),
+            trigger_to_nodes: self.trigger_to_nodes.clone(),
             checkpointer: self.checkpointer.clone(),
             cache: self.cache.clone(),
             store: self.store.clone(),
@@ -1354,14 +1367,10 @@ impl CompiledStateGraph {
         let mut config = config.clone();
         // ── Setup ────────────────────────────────────────────────────────────
 
-        let pregel_nodes = build_pregel_nodes(
-            &self.nodes,
-            &self.edges,
-            &self.waiting_edges,
-            &self.branches,
-            &self.channels,
-        );
-        let trigger_to_nodes = crate::pregel::build_trigger_to_nodes(&pregel_nodes);
+        // Cached at compile time (pure function of immutable graph fields); the
+        // per-invocation rebuild used to cost ~1.4ms at 1000 nodes.
+        let pregel_nodes = &self.pregel_nodes;
+        let trigger_to_nodes = &self.trigger_to_nodes;
 
         // Load checkpoint (for resume support)
         let mut saved_checkpoint_exists = false;
@@ -1520,12 +1529,12 @@ impl CompiledStateGraph {
 
             // PLAN: determine which nodes to run this step
             let mut tasks = prepare_next_tasks(
-                &pregel_nodes,
+                pregel_nodes,
                 &channels,
                 &config,
                 version_offset + step,
                 &mut versions_seen,
-                &trigger_to_nodes,
+                trigger_to_nodes,
                 updated_channels.as_ref(),
                 &checkpoint_id,
                 &pending_writes,
@@ -1709,7 +1718,7 @@ impl CompiledStateGraph {
                 &tasks,
                 &mut versions_seen,
                 &mut channel_versions,
-                &trigger_to_nodes,
+                trigger_to_nodes,
                 &next_version,
                 // Bounds the step-6 notify sweep to the previous super-step's
                 // updated channels (None on the first super-step = sweep all,
