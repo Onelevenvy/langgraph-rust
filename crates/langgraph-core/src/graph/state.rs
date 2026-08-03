@@ -665,19 +665,22 @@ impl CompiledStateGraph {
         }
 
         // Apply writes from completed tasks to get final channel state
+        let next_version = {
+            let max_version = channel_versions
+                .values()
+                .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                .max()
+                .unwrap_or(0);
+            JsonValue::String(format!("{:032}", max_version + 1))
+        };
         apply_writes(
             &mut channels,
             &tasks,
             &mut versions_seen,
             &mut channel_versions,
             &trigger_to_nodes,
-            |current| {
-                let num = current
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                JsonValue::String(format!("{:032}", num + 1))
-            },
+            &next_version,
+            None,
         );
 
         // Read channel values
@@ -1258,15 +1261,6 @@ fn output_channel_keys(channels: &HashMap<String, Box<dyn Channel>>) -> Vec<Stri
         .collect()
 }
 
-// Helper: bump-version closure used in apply_writes.
-fn bump_version(current: Option<&JsonValue>) -> JsonValue {
-    let num = current
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(0);
-    JsonValue::String(format!("{:032}", num + 1))
-}
-
 impl CompiledStateGraph {
     // ────────────────────────────────────────────────────────────────────────
     // Public thin wrappers
@@ -1509,6 +1503,16 @@ impl CompiledStateGraph {
             }
         }
 
+        // Running max channel version, used to derive next_version for apply_writes.
+        // Computed once here (a single O(#channels) pass after input writes) instead
+        // of a per-superstep max_by over every channel version. Versions only ever
+        // increase, so incrementing this counter per superstep stays exact.
+        let mut running_max_version: u64 = channel_versions
+            .values()
+            .filter_map(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+            .max()
+            .unwrap_or(0);
+
         // ── Super-step loop ──────────────────────────────────────────────────
 
         while step < max_steps {
@@ -1698,13 +1702,19 @@ impl CompiledStateGraph {
             // UPDATE: apply all task writes to channels. The returned set is
             // exactly the channels whose version moved this super-step (and are
             // available) — the next PLAN phase needs only the nodes they trigger.
+            running_max_version += 1;
+            let next_version = JsonValue::String(format!("{:032}", running_max_version));
             let updated = apply_writes(
                 &mut channels,
                 &tasks,
                 &mut versions_seen,
                 &mut channel_versions,
                 &trigger_to_nodes,
-                bump_version,
+                &next_version,
+                // Bounds the step-6 notify sweep to the previous super-step's
+                // updated channels (None on the first super-step = sweep all,
+                // covering directly-written input/START channels).
+                updated_channels.as_ref(),
             );
             updated_channels = Some(updated);
 
