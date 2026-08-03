@@ -1528,7 +1528,7 @@ impl CompiledStateGraph {
             let checkpoint_id = format!("{:032}", version_offset + step);
 
             // PLAN: determine which nodes to run this step
-            let mut tasks = prepare_next_tasks(
+            let tasks = prepare_next_tasks(
                 pregel_nodes,
                 &channels,
                 &config,
@@ -1622,7 +1622,8 @@ impl CompiledStateGraph {
                 }))
             };
 
-            match runner.run_tasks(&mut tasks).await {
+            let (tasks, task_result) = runner.run_tasks(tasks).await;
+            match task_result {
                 Ok(()) => {}
 
                 Err(crate::pregel::runner::RunnerError::Interrupt { task_id, interrupt }) => {
