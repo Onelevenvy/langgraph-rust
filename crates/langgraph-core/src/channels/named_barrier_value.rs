@@ -41,10 +41,10 @@ impl Channel for NamedBarrierValue {
         }
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         let seen = match checkpoint {
             Some(JsonValue::Array(arr)) => arr
-                .iter()
+                .into_iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect(),
             _ => HashSet::new(),
@@ -141,13 +141,14 @@ impl Channel for NamedBarrierValueAfterFinish {
         }
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
+        let is_some = checkpoint.is_some();
         Box::new(Self {
             key: self.key.clone(),
             names: self.names.clone(),
             seen: RwLock::new(HashSet::new()),
-            value: RwLock::new(checkpoint.cloned()),
-            finished: RwLock::new(checkpoint.is_some()),
+            value: RwLock::new(checkpoint),
+            finished: RwLock::new(is_some),
         })
     }
 

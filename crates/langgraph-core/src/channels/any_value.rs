@@ -24,10 +24,10 @@ impl Channel for AnyValue {
         self.value.read().clone()
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
-            value: RwLock::new(checkpoint.cloned()),
+            value: RwLock::new(checkpoint),
         })
     }
 

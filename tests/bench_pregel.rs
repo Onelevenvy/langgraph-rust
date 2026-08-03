@@ -58,8 +58,8 @@ fn make_message(i: usize) -> JsonValue {
     })
 }
 
-/// (thread_id, checkpoint_ns) -> (checkpoint_id, checkpoint_json, metadata_json, parent_cid)
-type StorageEntry = (String, JsonValue, JsonValue, Option<String>);
+/// (thread_id, checkpoint_ns) -> (checkpoint_id, checkpoint, metadata, parent_cid)
+type StorageEntry = (String, Checkpoint, CheckpointMetadata, Option<String>);
 /// (thread_id, checkpoint_ns) -> the thread's newest checkpoint
 type StorageMap = HashMap<(String, String), StorageEntry>;
 /// (thread_id, checkpoint_ns, checkpoint_id) -> pending writes (interrupt-only path)
@@ -71,9 +71,9 @@ type WritesMap = HashMap<(String, String, String), Vec<(String, String, JsonValu
 /// super-steps with a growing message history retains O(N²) serialized state
 /// and OOMs after a few hundred steps. Production savers prune; this one does
 /// the same — each `put` replaces the thread's previous checkpoint, so retained
-/// memory is O(latest state). The serde round-trip (to_value on `put`,
-/// from_value on `get_tuple`) mirrors `InMemorySaver`, so the measured per-step
-/// cost stays comparable.
+/// memory is O(latest state). It stores the `Checkpoint` struct directly (no
+/// JSON round trip), mirroring the current `InMemorySaver`, so the measured
+/// per-step cost stays comparable.
 struct LatestOnlySaver {
     storage: RwLock<StorageMap>,
     writes: RwLock<WritesMap>,
@@ -118,6 +118,7 @@ impl Default for LatestOnlySaver {
     }
 }
 
+#[async_trait::async_trait]
 impl BaseCheckpointSaver for LatestOnlySaver {
     fn get_tuple(
         &self,
@@ -125,7 +126,7 @@ impl BaseCheckpointSaver for LatestOnlySaver {
     ) -> Result<Option<CheckpointTuple>, CheckpointError> {
         let (thread_id, checkpoint_ns, requested_id) = Self::config_to_ids(config);
         let storage = self.storage.read().unwrap();
-        let Some((cid, checkpoint_json, metadata_json, parent_cid)) =
+        let Some((cid, checkpoint, metadata, parent_cid)) =
             storage.get(&(thread_id.clone(), checkpoint_ns.clone()))
         else {
             return Ok(None);
@@ -136,11 +137,6 @@ impl BaseCheckpointSaver for LatestOnlySaver {
                 return Ok(None);
             }
         }
-
-        let checkpoint: Checkpoint = serde_json::from_value(checkpoint_json.clone())
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-        let metadata: CheckpointMetadata = serde_json::from_value(metadata_json.clone())
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         let parent_config = parent_cid.as_ref().map(|pid| {
             let mut c = RunnableConfig::new();
@@ -176,8 +172,8 @@ impl BaseCheckpointSaver for LatestOnlySaver {
                 );
                 c
             },
-            checkpoint,
-            metadata,
+            checkpoint: checkpoint.clone(),
+            metadata: metadata.clone(),
             parent_config,
             pending_writes: if pending_writes.is_empty() {
                 None
@@ -216,11 +212,7 @@ impl BaseCheckpointSaver for LatestOnlySaver {
         }
 
         let mut results = Vec::new();
-        for ((tid, ns), (cid, checkpoint_json, metadata_json, parent_cid)) in entries {
-            let checkpoint: Checkpoint = serde_json::from_value(checkpoint_json.clone())
-                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-            let metadata: CheckpointMetadata = serde_json::from_value(metadata_json.clone())
-                .map_err(|e| CheckpointError::Storage(e.to_string()))?;
+        for ((tid, ns), (cid, checkpoint, metadata, parent_cid)) in entries {
             let parent_config = parent_cid.as_ref().map(|pid| {
                 let mut c = RunnableConfig::new();
                 c.insert(
@@ -246,8 +238,8 @@ impl BaseCheckpointSaver for LatestOnlySaver {
                     );
                     c
                 },
-                checkpoint,
-                metadata,
+                checkpoint: checkpoint.clone(),
+                metadata: metadata.clone(),
                 parent_config,
                 pending_writes: None,
             });
@@ -258,16 +250,11 @@ impl BaseCheckpointSaver for LatestOnlySaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         _new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
         let (thread_id, checkpoint_ns, _) = Self::config_to_ids(config);
-
-        let checkpoint_json = serde_json::to_value(checkpoint)
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-        let metadata_json =
-            serde_json::to_value(metadata).map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
         // The new checkpoint's parent is the thread's current newest.
         let parent_id = self
@@ -278,19 +265,16 @@ impl BaseCheckpointSaver for LatestOnlySaver {
             .map(|(cid, _, _, _)| cid.clone());
 
         // Replace the thread's checkpoint — only the newest is retained.
+        let cid = checkpoint.id.clone();
         self.storage.write().unwrap().insert(
             (thread_id.clone(), checkpoint_ns.clone()),
-            (
-                checkpoint.id.clone(),
-                checkpoint_json,
-                metadata_json,
-                parent_id,
-            ),
+            (cid.clone(), checkpoint, metadata.clone(), parent_id),
         );
         // Prune pending writes down to the newest checkpoint id.
-        self.writes.write().unwrap().retain(|(tid, ns, cid), _| {
-            tid != &thread_id || ns != &checkpoint_ns || cid == &checkpoint.id
-        });
+        self.writes
+            .write()
+            .unwrap()
+            .retain(|(tid, ns, cid2), _| tid != &thread_id || ns != &checkpoint_ns || cid2 == &cid);
 
         let mut new_config = RunnableConfig::new();
         new_config.insert(
@@ -298,7 +282,7 @@ impl BaseCheckpointSaver for LatestOnlySaver {
             serde_json::json!({
                 "thread_id": thread_id,
                 "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint.id,
+                "checkpoint_id": cid,
             }),
         );
         Ok(new_config)
@@ -333,6 +317,40 @@ impl BaseCheckpointSaver for LatestOnlySaver {
             .unwrap()
             .retain(|(tid, _, _), _| tid != thread_id);
         Ok(())
+    }
+
+    // Async overrides mirroring InMemorySaver: pure in-memory, so skip the
+    // trait default's block_in_place bridge — the benches must measure the
+    // native in-memory path, not a thread handoff per call.
+    async fn aget_tuple(
+        &self,
+        config: &RunnableConfig,
+    ) -> Result<Option<CheckpointTuple>, CheckpointError> {
+        self.get_tuple(config)
+    }
+
+    async fn aput(
+        &self,
+        config: &RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: &CheckpointMetadata,
+        new_versions: &ChannelVersions,
+    ) -> Result<RunnableConfig, CheckpointError> {
+        self.put(config, checkpoint, metadata, new_versions)
+    }
+
+    async fn aput_writes(
+        &self,
+        config: &RunnableConfig,
+        writes: Vec<(String, String, JsonValue)>,
+        task_id: String,
+        task_path: String,
+    ) -> Result<(), CheckpointError> {
+        self.put_writes(config, &writes, &task_id, &task_path)
+    }
+
+    async fn adelete_thread(&self, thread_id: String) -> Result<(), CheckpointError> {
+        self.delete_thread(&thread_id)
     }
 }
 

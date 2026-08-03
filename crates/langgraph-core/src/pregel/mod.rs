@@ -85,13 +85,17 @@ pub fn build_trigger_to_nodes(nodes: &HashMap<String, PregelNode>) -> TriggerToN
 }
 
 /// Reconstruct live channels from a checkpoint.
+///
+/// Consumes the checkpoint's channel values so restored state is moved into
+/// the channels instead of deep-copied (the checkpoint is owned by the
+/// caller and not needed afterwards).
 pub fn channels_from_checkpoint(
     specs: &HashMap<String, Box<dyn Channel>>,
-    checkpoint_channels: &HashMap<String, Option<JsonValue>>,
+    mut checkpoint_channels: HashMap<String, JsonValue>,
 ) -> HashMap<String, Box<dyn Channel>> {
     let mut channels = HashMap::new();
     for (key, spec) in specs {
-        let cp = checkpoint_channels.get(key).and_then(|v| v.as_ref());
+        let cp = checkpoint_channels.remove(key);
         channels.insert(key.clone(), spec.from_checkpoint(cp));
     }
     channels

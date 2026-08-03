@@ -23,6 +23,38 @@ use crate::queries::*;
 /// A dumped blob row: (thread_id, checkpoint_ns, channel, type, checkpoint_id, data)
 type BlobDumpRow = (String, String, String, String, String, Option<Vec<u8>>);
 
+/// Serialization view of a `Checkpoint` used for the `checkpoints` row.
+///
+/// `channel_values` live in `checkpoint_blobs`, but the row's JSON must stay
+/// deserializable as a full `Checkpoint`, so it is emitted as an empty object
+/// placeholder — encoding the real values here only to strip them would cost
+/// a full-state copy on every super-step.
+#[derive(serde::Serialize)]
+struct CheckpointRowView<'a> {
+    v: i64,
+    id: &'a str,
+    ts: &'a str,
+    channel_values: serde_json::Map<String, JsonValue>,
+    channel_versions: &'a ChannelVersions,
+    versions_seen: &'a HashMap<String, ChannelVersions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_channels: &'a Option<Vec<String>>,
+}
+
+impl<'a> From<&'a Checkpoint> for CheckpointRowView<'a> {
+    fn from(cp: &'a Checkpoint) -> Self {
+        Self {
+            v: cp.v,
+            id: &cp.id,
+            ts: &cp.ts,
+            channel_values: serde_json::Map::new(),
+            channel_versions: &cp.channel_versions,
+            versions_seen: &cp.versions_seen,
+            updated_channels: &cp.updated_channels,
+        }
+    }
+}
+
 /// Async SQLite checkpoint saver using sqlx.
 ///
 /// Uses a three-table schema (`checkpoints`, `checkpoint_blobs`,
@@ -442,7 +474,7 @@ impl BaseCheckpointSaver for SqliteSaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -529,7 +561,7 @@ impl BaseCheckpointSaver for SqliteSaver {
     async fn aput(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -549,20 +581,10 @@ impl BaseCheckpointSaver for SqliteSaver {
 
         let next_config = Self::make_config(thread_id, checkpoint_ns, &checkpoint.id);
 
-        // Strip channel_values from the JSON checkpoint payload — they live in
-        // checkpoint_blobs. Blob rows are keyed by (channel, version) and are
-        // written incrementally (only channels in `new_versions`), so on load
-        // every channel's value resolves through the version join regardless
-        // of which checkpoint wrote the blob.
-        let mut checkpoint_value = serde_json::to_value(checkpoint)
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-        if let Some(obj) = checkpoint_value.as_object_mut() {
-            obj.insert(
-                "channel_values".to_string(),
-                JsonValue::Object(Default::default()),
-            );
-        }
-        let checkpoint_text = serde_json::to_string(&checkpoint_value)
+        // Serialize only the checkpoint's metadata fields — channel_values live
+        // in checkpoint_blobs, so encoding them here (only to strip them
+        // afterwards) would cost a full-state copy on every super-step.
+        let checkpoint_text = serde_json::to_string(&CheckpointRowView::from(&checkpoint))
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
         // Merge config-level fields (e.g. `langgraph_step`) into the
         // metadata before persisting, so `list(filter=...)` over those
@@ -800,7 +822,10 @@ mod tests {
             ..Default::default()
         };
 
-        let next = saver.aput(&cfg, &cp, &metadata, &versions).await.unwrap();
+        let next = saver
+            .aput(&cfg, cp.clone(), &metadata, &versions)
+            .await
+            .unwrap();
 
         // The returned config should reference the new checkpoint id
         let returned_cid = next
@@ -830,7 +855,7 @@ mod tests {
         let (cp, versions) = make_checkpoint(vec![("a", serde_json::json!(1))]);
         let cfg = config_for("thread-W");
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
             .await
             .unwrap();
 
@@ -870,7 +895,7 @@ mod tests {
             let (cp, versions) = make_checkpoint(vec![("x", serde_json::json!(i))]);
             ids.push(cp.id.clone());
             saver
-                .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+                .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
                 .await
                 .unwrap();
         }
@@ -900,7 +925,7 @@ mod tests {
         let (cp, versions) = make_checkpoint(vec![("x", serde_json::json!(1))]);
         let cfg = config_for("thread-D");
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
             .await
             .unwrap();
         let cfg_with_id = config_with_id("thread-D", &cp.id);
@@ -936,7 +961,12 @@ mod tests {
         let mut versions1: ChannelVersions = HashMap::new();
         versions1.insert("counter".into(), JsonValue::Number(1.into()));
         saver
-            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &versions1)
+            .aput(
+                &cfg,
+                cp1.clone(),
+                &CheckpointMetadata::default(),
+                &versions1,
+            )
             .await
             .unwrap();
 
@@ -951,7 +981,12 @@ mod tests {
         let mut versions2: ChannelVersions = HashMap::new();
         versions2.insert("counter".into(), JsonValue::Number(2.into()));
         saver
-            .aput(&cfg, &cp2, &CheckpointMetadata::default(), &versions2)
+            .aput(
+                &cfg,
+                cp2.clone(),
+                &CheckpointMetadata::default(),
+                &versions2,
+            )
             .await
             .unwrap();
 
@@ -989,7 +1024,12 @@ mod tests {
         versions1.insert("a".into(), JsonValue::String("1".into()));
         versions1.insert("b".into(), JsonValue::String("1".into()));
         let next1 = saver
-            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &versions1)
+            .aput(
+                &cfg,
+                cp1.clone(),
+                &CheckpointMetadata::default(),
+                &versions1,
+            )
             .await
             .unwrap();
 
@@ -1006,7 +1046,12 @@ mod tests {
         let mut versions2: ChannelVersions = HashMap::new();
         versions2.insert("a".into(), JsonValue::String("2".into()));
         saver
-            .aput(&next1, &cp2, &CheckpointMetadata::default(), &versions2)
+            .aput(
+                &next1,
+                cp2.clone(),
+                &CheckpointMetadata::default(),
+                &versions2,
+            )
             .await
             .unwrap();
 
@@ -1067,7 +1112,7 @@ mod tests {
                 step: Some(step),
                 ..Default::default()
             };
-            saver.aput(&cfg, &cp, &meta, &vers).await.unwrap();
+            saver.aput(&cfg, cp.clone(), &meta, &vers).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
 
@@ -1142,7 +1187,7 @@ mod tests {
         // Metadata passed in does NOT have step set — it should be filled
         // from the config.
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &vers)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &vers)
             .await
             .unwrap();
 
@@ -1169,12 +1214,7 @@ mod tests {
         let cp_clone = cp.clone();
         let vers_clone = vers.clone();
         let put_result = tokio::task::spawn_blocking(move || {
-            s2.put(
-                &cfg2,
-                &cp_clone,
-                &CheckpointMetadata::default(),
-                &vers_clone,
-            )
+            s2.put(&cfg2, cp_clone, &CheckpointMetadata::default(), &vers_clone)
         })
         .await
         .unwrap();
@@ -1196,7 +1236,7 @@ mod tests {
         let (cp1, vers1) = make_checkpoint(vec![("x", serde_json::json!("a"))]);
         let cfg = config_for("thread-P");
         let next1 = saver
-            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &vers1)
+            .aput(&cfg, cp1.clone(), &CheckpointMetadata::default(), &vers1)
             .await
             .unwrap();
 
@@ -1209,7 +1249,7 @@ mod tests {
         // becomes the parent_checkpoint_id of cp2.
         let (cp2, vers2) = make_checkpoint(vec![("x", serde_json::json!("b"))]);
         saver
-            .aput(&next1, &cp2, &CheckpointMetadata::default(), &vers2)
+            .aput(&next1, cp2.clone(), &CheckpointMetadata::default(), &vers2)
             .await
             .unwrap();
 

@@ -33,10 +33,10 @@ impl Channel for Topic {
         }
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         let values = match checkpoint {
-            Some(JsonValue::Array(arr)) => arr.clone(),
-            Some(other) => vec![other.clone()],
+            Some(JsonValue::Array(arr)) => arr,
+            Some(other) => vec![other],
             None => Vec::new(),
         };
         Box::new(Self {

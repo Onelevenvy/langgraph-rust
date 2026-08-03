@@ -34,10 +34,10 @@ impl Channel for BinaryOperatorAggregate {
         self.value.read().clone()
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
-            value: RwLock::new(checkpoint.cloned()),
+            value: RwLock::new(checkpoint),
             reducer: self.reducer,
         })
     }
@@ -168,7 +168,7 @@ mod tests {
         ch.update(&[serde_json::json!([1, 2])]).unwrap();
 
         let cp = ch.checkpoint();
-        let restored = ch.from_checkpoint(cp.as_ref());
+        let restored = ch.from_checkpoint(cp);
         assert_eq!(restored.get().unwrap(), serde_json::json!([1, 2]));
 
         restored.update(&[serde_json::json!([3])]).unwrap();

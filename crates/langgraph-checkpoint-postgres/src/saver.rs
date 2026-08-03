@@ -335,7 +335,7 @@ impl BaseCheckpointSaver for PostgresSaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -437,7 +437,7 @@ impl BaseCheckpointSaver for PostgresSaver {
     async fn aput(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -463,7 +463,7 @@ impl BaseCheckpointSaver for PostgresSaver {
             }
         }));
 
-        let checkpoint_json = serde_json::to_value(checkpoint)
+        let checkpoint_json = serde_json::to_value(&checkpoint)
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
         let metadata_json =
             serde_json::to_value(metadata).map_err(|e| CheckpointError::Storage(e.to_string()))?;

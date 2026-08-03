@@ -510,6 +510,11 @@ impl CompiledStateGraph {
     /// run; only channels whose version moved since then are passed to the
     /// saver as `new_versions`, so persistent savers can write delta blobs
     /// instead of re-encoding every channel on every super-step.
+    ///
+    /// Sync variant, used by the cold-path public API (`update_state`). The
+    /// hot BSP loop uses [`Self::save_checkpoint_async`] to avoid the
+    /// sync/async bridge (block_in_place + runtime handoff) on every
+    /// super-step.
     fn save_checkpoint(
         &self,
         checkpointer: &Arc<dyn BaseCheckpointSaver>,
@@ -519,36 +524,30 @@ impl CompiledStateGraph {
         versions_seen: &HashMap<String, HashMap<String, JsonValue>>,
         previous_versions: &ChannelVersions,
     ) -> Option<RunnableConfig> {
-        use chrono::Utc;
-        use langgraph_checkpoint::checkpoint::id::uuid6;
-
-        // Collect all channel values (including trigger channels for state history)
-        let channel_values: HashMap<String, JsonValue> = channels
-            .iter()
-            .filter_map(|(k, v)| v.checkpoint().map(|val| (k.clone(), val)))
-            .collect();
-
-        let checkpoint = langgraph_checkpoint::Checkpoint {
-            v: 2,
-            id: uuid6(),
-            ts: Utc::now().to_rfc3339(),
-            channel_values,
-            channel_versions: channel_versions.clone(),
-            versions_seen: versions_seen.clone(),
-            updated_channels: None,
-        };
-
-        // Delta vs. the versions this run started from: only channels whose
-        // version changed since then need new blob rows.
-        let new_versions: ChannelVersions = channel_versions
-            .iter()
-            .filter(|(k, v)| previous_versions.get(k.as_str()) != Some(*v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        let metadata = CheckpointMetadata::default();
+        let (checkpoint, metadata, new_versions) =
+            build_checkpoint(channels, channel_versions, versions_seen, previous_versions);
         checkpointer
-            .put(config, &checkpoint, &metadata, &new_versions)
+            .put(config, checkpoint, &metadata, &new_versions)
+            .ok()
+    }
+
+    /// Async variant of [`Self::save_checkpoint`] for the hot BSP loop: awaits
+    /// `aput` directly so the graph runner never bridges through
+    /// `block_in_place(block_on(...))` on the per-super-step save path.
+    async fn save_checkpoint_async(
+        &self,
+        checkpointer: &Arc<dyn BaseCheckpointSaver>,
+        config: &RunnableConfig,
+        channels: &HashMap<String, Box<dyn Channel>>,
+        channel_versions: &ChannelVersions,
+        versions_seen: &HashMap<String, HashMap<String, JsonValue>>,
+        previous_versions: &ChannelVersions,
+    ) -> Option<RunnableConfig> {
+        let (checkpoint, metadata, new_versions) =
+            build_checkpoint(channels, channel_versions, versions_seen, previous_versions);
+        checkpointer
+            .aput(config, checkpoint, &metadata, &new_versions)
+            .await
             .ok()
     }
 
@@ -618,13 +617,8 @@ impl CompiledStateGraph {
         };
 
         // Reconstruct channels from checkpoint
-        let cp_channels: HashMap<String, Option<JsonValue>> = saved
-            .checkpoint
-            .channel_values
-            .iter()
-            .map(|(k, v)| (k.clone(), Some(v.clone())))
-            .collect();
-        let mut channels = channels_from_checkpoint(&self.channels, &cp_channels);
+        let mut channels =
+            channels_from_checkpoint(&self.channels, saved.checkpoint.channel_values);
 
         let mut channel_versions = saved.checkpoint.channel_versions.clone();
         let mut versions_seen = saved.checkpoint.versions_seen.clone();
@@ -800,29 +794,22 @@ impl CompiledStateGraph {
             .map_err(|e| GraphError::Checkpoint(e.to_string()))?;
 
         // Reconstruct channels from checkpoint (or fresh if none)
-        let channels: HashMap<String, Box<dyn Channel>> = if let Some(ref saved) = saved {
-            let cp_channels: HashMap<String, Option<JsonValue>> = saved
-                .checkpoint
-                .channel_values
-                .iter()
-                .map(|(k, v)| (k.clone(), Some(v.clone())))
-                .collect();
-            channels_from_checkpoint(&self.channels, &cp_channels)
+        let (channels, mut channel_versions, versions_seen) = if let Some(saved) = saved {
+            let checkpoint = saved.checkpoint;
+            let channels = channels_from_checkpoint(&self.channels, checkpoint.channel_values);
+            (
+                channels,
+                checkpoint.channel_versions,
+                checkpoint.versions_seen,
+            )
         } else {
-            self.channels
+            let channels = self
+                .channels
                 .iter()
                 .map(|(k, c)| (k.clone(), c.clone_channel()))
-                .collect()
+                .collect();
+            (channels, HashMap::new(), HashMap::new())
         };
-
-        let mut channel_versions = saved
-            .as_ref()
-            .map(|s| s.checkpoint.channel_versions.clone())
-            .unwrap_or_default();
-        let versions_seen = saved
-            .as_ref()
-            .map(|s| s.checkpoint.versions_seen.clone())
-            .unwrap_or_default();
         let previous_versions = channel_versions.clone();
 
         // Apply the update values to channels
@@ -893,15 +880,10 @@ impl CompiledStateGraph {
         let pregel_nodes = &self.pregel_nodes;
         let trigger_to_nodes = &self.trigger_to_nodes;
 
-        for saved in &tuples {
+        for saved in tuples {
             // Reconstruct channels from checkpoint
-            let cp_channels: HashMap<String, Option<JsonValue>> = saved
-                .checkpoint
-                .channel_values
-                .iter()
-                .map(|(k, v)| (k.clone(), Some(v.clone())))
-                .collect();
-            let channels = channels_from_checkpoint(&self.channels, &cp_channels);
+            let channels =
+                channels_from_checkpoint(&self.channels, saved.checkpoint.channel_values);
 
             let channel_versions = saved.checkpoint.channel_versions.clone();
             let mut versions_seen = saved.checkpoint.versions_seen.clone();
@@ -1265,6 +1247,50 @@ fn apply_completed_writes(
     }
 }
 
+/// Build a `Checkpoint` plus its metadata and the `new_versions` delta from the
+/// current channel state. Pure CPU — both the sync and async save paths share
+/// it; only the final saver call differs (`put` vs `aput`).
+fn build_checkpoint(
+    channels: &HashMap<String, Box<dyn Channel>>,
+    channel_versions: &ChannelVersions,
+    versions_seen: &HashMap<String, HashMap<String, JsonValue>>,
+    previous_versions: &ChannelVersions,
+) -> (
+    langgraph_checkpoint::Checkpoint,
+    CheckpointMetadata,
+    ChannelVersions,
+) {
+    use chrono::Utc;
+    use langgraph_checkpoint::checkpoint::id::uuid6;
+
+    // Collect all channel values (including trigger channels for state history)
+    let channel_values: HashMap<String, JsonValue> = channels
+        .iter()
+        .filter_map(|(k, v)| v.checkpoint().map(|val| (k.clone(), val)))
+        .collect();
+
+    let checkpoint = langgraph_checkpoint::Checkpoint {
+        v: 2,
+        id: uuid6(),
+        ts: Utc::now().to_rfc3339(),
+        channel_values,
+        channel_versions: channel_versions.clone(),
+        versions_seen: versions_seen.clone(),
+        updated_channels: None,
+    };
+
+    // Delta vs. the versions this run started from: only channels whose
+    // version changed since then need new blob rows.
+    let new_versions: ChannelVersions = channel_versions
+        .iter()
+        .filter(|(k, v)| previous_versions.get(k.as_str()) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    let metadata = CheckpointMetadata::default();
+    (checkpoint, metadata, new_versions)
+}
+
 // Helper: collect output channel keys (excluding internal routing channels).
 fn output_channel_keys(channels: &HashMap<String, Box<dyn Channel>>) -> Vec<String> {
     channels
@@ -1374,55 +1400,51 @@ impl CompiledStateGraph {
 
         // Load checkpoint (for resume support)
         let mut saved_checkpoint_exists = false;
-        let (mut channels, mut channel_versions, mut versions_seen) =
-            if let Some(ref cp) = self.checkpointer {
-                match cp.get_tuple(&config) {
-                    Ok(Some(tuple)) => {
-                        saved_checkpoint_exists = true;
-                        let cp_channels: HashMap<String, Option<JsonValue>> = tuple
-                            .checkpoint
-                            .channel_values
-                            .iter()
-                            .map(|(k, v)| (k.clone(), Some(v.clone())))
-                            .collect();
-                        let restored = channels_from_checkpoint(&self.channels, &cp_channels);
+        let (mut channels, mut channel_versions, mut versions_seen) = if let Some(ref cp) =
+            self.checkpointer
+        {
+            match cp.aget_tuple(&config).await {
+                Ok(Some(tuple)) => {
+                    saved_checkpoint_exists = true;
+                    let restored =
+                        channels_from_checkpoint(&self.channels, tuple.checkpoint.channel_values);
 
-                        // Apply non-RESUME pending writes from the checkpoint
-                        if let Some(ref pending) = tuple.pending_writes {
-                            for (_task_id, channel, value) in pending {
-                                if channel != RESUME {
-                                    if let Some(ch) = restored.get(channel) {
-                                        ch.update(std::slice::from_ref(value)).ok();
-                                    }
+                    // Apply non-RESUME pending writes from the checkpoint
+                    if let Some(ref pending) = tuple.pending_writes {
+                        for (_task_id, channel, value) in pending {
+                            if channel != RESUME {
+                                if let Some(ch) = restored.get(channel) {
+                                    ch.update(std::slice::from_ref(value)).ok();
                                 }
                             }
                         }
-
-                        (
-                            restored,
-                            tuple.checkpoint.channel_versions.clone(),
-                            tuple.checkpoint.versions_seen.clone(),
-                        )
                     }
-                    _ => (
-                        self.channels
-                            .iter()
-                            .map(|(k, c)| (k.clone(), c.clone_channel()))
-                            .collect(),
-                        HashMap::new(),
-                        HashMap::new(),
-                    ),
+
+                    (
+                        restored,
+                        tuple.checkpoint.channel_versions.clone(),
+                        tuple.checkpoint.versions_seen.clone(),
+                    )
                 }
-            } else {
-                (
+                _ => (
                     self.channels
                         .iter()
                         .map(|(k, c)| (k.clone(), c.clone_channel()))
                         .collect(),
                     HashMap::new(),
                     HashMap::new(),
-                )
-            };
+                ),
+            }
+        } else {
+            (
+                self.channels
+                    .iter()
+                    .map(|(k, c)| (k.clone(), c.clone_channel()))
+                    .collect(),
+                HashMap::new(),
+                HashMap::new(),
+            )
+        };
 
         // Baseline for incremental checkpoint writes: the versions as of the
         // start of this run. Only channels that move past these get blob rows.
@@ -1567,14 +1589,17 @@ impl CompiledStateGraph {
                 let task_names: Vec<String> = tasks.iter().map(|t| t.name.clone()).collect();
                 if task_names.iter().any(|n| self.interrupt_before.contains(n)) {
                     if let Some(ref cp) = self.checkpointer {
-                        if let Some(new_config) = self.save_checkpoint(
-                            cp,
-                            &config,
-                            &channels,
-                            &channel_versions,
-                            &versions_seen,
-                            &previous_versions,
-                        ) {
+                        if let Some(new_config) = self
+                            .save_checkpoint_async(
+                                cp,
+                                &config,
+                                &channels,
+                                &channel_versions,
+                                &versions_seen,
+                                &previous_versions,
+                            )
+                            .await
+                        {
                             config = new_config;
                         }
                     }
@@ -1641,14 +1666,17 @@ impl CompiledStateGraph {
 
                     // Save checkpoint (now includes completed tasks' channel writes)
                     if let Some(ref cp) = self.checkpointer {
-                        if let Some(new_config) = self.save_checkpoint(
-                            cp,
-                            &config,
-                            &channels,
-                            &channel_versions,
-                            &versions_seen,
-                            &previous_versions,
-                        ) {
+                        if let Some(new_config) = self
+                            .save_checkpoint_async(
+                                cp,
+                                &config,
+                                &channels,
+                                &channel_versions,
+                                &versions_seen,
+                                &previous_versions,
+                            )
+                            .await
+                        {
                             config = new_config;
                         }
                         // Save interrupt as pending writes for get_state()
@@ -1665,7 +1693,9 @@ impl CompiledStateGraph {
                             })
                             .collect();
                         if !iw.is_empty() {
-                            if let Err(e) = cp.put_writes(&config, &iw, &task_id, "") {
+                            if let Err(e) =
+                                cp.aput_writes(&config, iw, task_id, String::new()).await
+                            {
                                 eprintln!("[CHECKPOINT] Failed to save interrupt writes: {}", e);
                             }
                         }
@@ -1740,14 +1770,17 @@ impl CompiledStateGraph {
 
             // Save "loop" checkpoint after each completed super-step
             if let Some(ref cp) = self.checkpointer {
-                if let Some(new_config) = self.save_checkpoint(
-                    cp,
-                    &config,
-                    &channels,
-                    &channel_versions,
-                    &versions_seen,
-                    &previous_versions,
-                ) {
+                if let Some(new_config) = self
+                    .save_checkpoint_async(
+                        cp,
+                        &config,
+                        &channels,
+                        &channel_versions,
+                        &versions_seen,
+                        &previous_versions,
+                    )
+                    .await
+                {
                     config = new_config;
                 }
             }

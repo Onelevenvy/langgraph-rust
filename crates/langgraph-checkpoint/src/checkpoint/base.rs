@@ -52,10 +52,13 @@ pub trait BaseCheckpointSaver: Send + Sync {
     ) -> Result<Vec<CheckpointTuple>, CheckpointError>;
 
     /// Store a checkpoint.
+    ///
+    /// Takes ownership of the `Checkpoint` so savers can move the serialized
+    /// state instead of deep-copying it on the hot per-super-step path.
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError>;
@@ -89,29 +92,42 @@ pub trait BaseCheckpointSaver: Send + Sync {
     }
 
     // Async mirrors with default implementations
+    //
+    // The defaults bridge to the sync methods. `block_in_place` is only valid
+    // on a multi-thread runtime (it panics on `current_thread`), so when no
+    // multi-thread runtime is present the sync method is called directly —
+    // the same behavior a synchronous caller gets today.
 
     async fn aget_tuple(
         &self,
         config: &RunnableConfig,
     ) -> Result<Option<CheckpointTuple>, CheckpointError> {
-        let config = config.clone();
-        let this = self;
-        // Use blocking for default impl
-        tokio::task::block_in_place(|| this.get_tuple(&config))
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread {
+                let config = config.clone();
+                let this = self;
+                return tokio::task::block_in_place(|| this.get_tuple(&config));
+            }
+        }
+        self.get_tuple(config)
     }
 
     async fn aput(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
-        let config = config.clone();
-        let checkpoint = checkpoint.clone();
-        let metadata = metadata.clone();
-        let new_versions = new_versions.clone();
-        tokio::task::block_in_place(|| self.put(&config, &checkpoint, &metadata, &new_versions))
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread {
+                let config = config.clone();
+                return tokio::task::block_in_place(move || {
+                    self.put(&config, checkpoint, metadata, new_versions)
+                });
+            }
+        }
+        self.put(config, checkpoint, metadata, new_versions)
     }
 
     async fn aput_writes(
@@ -121,13 +137,25 @@ pub trait BaseCheckpointSaver: Send + Sync {
         task_id: String,
         task_path: String,
     ) -> Result<(), CheckpointError> {
-        let config = config.clone();
-        tokio::task::block_in_place(|| self.put_writes(&config, &writes, &task_id, &task_path))
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread {
+                let config = config.clone();
+                return tokio::task::block_in_place(|| {
+                    self.put_writes(&config, &writes, &task_id, &task_path)
+                });
+            }
+        }
+        self.put_writes(config, &writes, &task_id, &task_path)
     }
 
     async fn adelete_thread(&self, thread_id: String) -> Result<(), CheckpointError> {
-        let this = self;
-        tokio::task::block_in_place(|| this.delete_thread(&thread_id))
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::CurrentThread {
+                let this = self;
+                return tokio::task::block_in_place(|| this.delete_thread(&thread_id));
+            }
+        }
+        self.delete_thread(&thread_id)
     }
 }
 
