@@ -1432,6 +1432,17 @@ impl CompiledStateGraph {
         let mut ran_super_step = false;
         let mut pending_writes: Vec<(String, String, JsonValue)> = Vec::new();
 
+        // Candidate-set fast path for prepare_next_tasks. The first super-step
+        // must scan every node (input writes and START-edge trigger channels are
+        // written directly, not via apply_writes), so this stays `None` until the
+        // first super-step's apply_writes returns the channels it bumped. After
+        // that, a node can only trigger via a channel whose version just moved,
+        // and apply_writes reports exactly that set — so subsequent super-steps
+        // only check nodes reachable from `updated` instead of all N nodes
+        // (O(N) candidates -> O(updated) candidates; a linear chain goes from
+        // O(N²) total to O(N)).
+        let mut updated_channels: Option<HashSet<String>> = None;
+
         // Version offset: ensures new trigger writes have strictly higher
         // versions than anything the checkpoint has already seen.
         let version_offset: u64 = if saved_checkpoint_exists {
@@ -1511,7 +1522,7 @@ impl CompiledStateGraph {
                 version_offset + step,
                 &mut versions_seen,
                 &trigger_to_nodes,
-                None,
+                updated_channels.as_ref(),
                 &checkpoint_id,
                 &pending_writes,
                 &channel_versions,
@@ -1684,8 +1695,10 @@ impl CompiledStateGraph {
                 }
             }
 
-            // UPDATE: apply all task writes to channels
-            apply_writes(
+            // UPDATE: apply all task writes to channels. The returned set is
+            // exactly the channels whose version moved this super-step (and are
+            // available) — the next PLAN phase needs only the nodes they trigger.
+            let updated = apply_writes(
                 &mut channels,
                 &tasks,
                 &mut versions_seen,
@@ -1693,6 +1706,7 @@ impl CompiledStateGraph {
                 &trigger_to_nodes,
                 bump_version,
             );
+            updated_channels = Some(updated);
 
             // ── DEBUG: 打印 apply_writes 后 messages channel 状态 ──
             // {

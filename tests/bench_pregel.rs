@@ -58,6 +58,13 @@ fn make_message(i: usize) -> JsonValue {
     })
 }
 
+/// (thread_id, checkpoint_ns) -> (checkpoint_id, checkpoint_json, metadata_json, parent_cid)
+type StorageEntry = (String, JsonValue, JsonValue, Option<String>);
+/// (thread_id, checkpoint_ns) -> the thread's newest checkpoint
+type StorageMap = HashMap<(String, String), StorageEntry>;
+/// (thread_id, checkpoint_ns, checkpoint_id) -> pending writes (interrupt-only path)
+type WritesMap = HashMap<(String, String, String), Vec<(String, String, JsonValue)>>;
+
 /// A checkpoint saver that retains only the newest checkpoint per thread.
 ///
 /// `InMemorySaver` keeps every checkpoint forever, so a benchmark that runs `N`
@@ -67,13 +74,6 @@ fn make_message(i: usize) -> JsonValue {
 /// memory is O(latest state). The serde round-trip (to_value on `put`,
 /// from_value on `get_tuple`) mirrors `InMemorySaver`, so the measured per-step
 /// cost stays comparable.
-/// (thread_id, checkpoint_ns) -> (checkpoint_id, checkpoint_json, metadata_json, parent_cid)
-type StorageEntry = (String, JsonValue, JsonValue, Option<String>);
-/// (thread_id, checkpoint_ns) -> the thread's newest checkpoint
-type StorageMap = HashMap<(String, String), StorageEntry>;
-/// (thread_id, checkpoint_ns, checkpoint_id) -> pending writes (interrupt-only path)
-type WritesMap = HashMap<(String, String, String), Vec<(String, String, JsonValue)>>;
-
 struct LatestOnlySaver {
     storage: RwLock<StorageMap>,
     writes: RwLock<WritesMap>,
@@ -561,6 +561,76 @@ async fn bench_parallel_fanout() {
 
         println!(
             "parallel fan-out: {branches} branches x {BRANCH_SLEEP_MS}ms => {elapsed:?}  (serial {BRANCH_SLEEP_MS}ms*n, parallel ~{BRANCH_SLEEP_MS}ms)"
+        );
+    }
+}
+
+/// Linear chain of `nodes` no-op nodes (START -> n0 -> n1 -> ... -> END),
+/// mirroring juncture's `sequential.rs` bench 1:1 so the per-node framework
+/// overhead is directly comparable (juncture reference: ~2.3µs/node at 1000,
+/// measured 2026-08-02). Each node returns an empty update; the last writes a
+/// `done` marker so the chain is verified to have run all `nodes` super-steps —
+/// a silent truncation fails the assert, not the timing. A chain is one
+/// super-step per node, so the recursion limit is raised above the 25 default.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_sequential_chain() {
+    const REPS: u32 = 3;
+
+    for nodes in [10usize, 100, 500, 1000] {
+        let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
+        channels.insert(
+            "messages".to_string(),
+            Box::new(BinaryOperatorAggregate::new("messages", add_messages_ref))
+                as Box<dyn Channel>,
+        );
+        channels.insert("done".to_string(), Box::new(LastValue::new("done")));
+
+        let mut graph = StateGraph::new(channels);
+        let names: Vec<String> = (0..nodes).map(|i| format!("node_{i}")).collect();
+        for (i, name) in names.iter().enumerate() {
+            let is_last = i + 1 == nodes;
+            graph
+                .add_node(
+                    name.clone(),
+                    move |_input: JsonValue, _config: RunnableConfig| {
+                        let is_last = is_last;
+                        async move {
+                            Ok(if is_last {
+                                json!({"done": true})
+                            } else {
+                                json!({})
+                            })
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        graph.add_edge(START, names[0].clone()).unwrap();
+        for i in 0..nodes - 1 {
+            graph
+                .add_edge(names[i].clone(), names[i + 1].clone())
+                .unwrap();
+        }
+        graph.add_edge(names[nodes - 1].clone(), END).unwrap();
+        let app = graph.compile().unwrap();
+
+        let config = RunnableConfig::new().with_recursion_limit(100_000);
+
+        let mut best = Duration::MAX;
+        for _ in 0..REPS {
+            let t = Instant::now();
+            let output = app.ainvoke(&json!({}), &config).await.unwrap();
+            best = best.min(t.elapsed());
+            assert_eq!(
+                output.get("done"),
+                Some(&json!(true)),
+                "chain was truncated: expected all {nodes} nodes to run"
+            );
+        }
+        println!(
+            "sequential chain: {nodes:>4} no-op nodes => {best:?}  ({:?}/node)",
+            best / nodes as u32
         );
     }
 }
