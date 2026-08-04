@@ -756,7 +756,113 @@ async fn bench_sqlite_static_context() {
             "sqlite static context: {steps:>4} steps, {CONTEXT_SIZE}-byte static channel => {elapsed:?}  ({:?}/step)",
             elapsed / (steps - 1) as u32
         );
+
+        // Correctness: the static context must survive every step (version-
+        // merged reads + BlobCache must reconstruct it) and messages accumulate.
+        let snapshot = app.get_state(&config).unwrap();
+        let ctx_len = snapshot
+            .values
+            .get("context")
+            .and_then(|c| c.as_str())
+            .map(|s| s.len())
+            .unwrap_or(0);
+        assert_eq!(ctx_len, CONTEXT_SIZE, "static context was truncated");
+        let msg_count = snapshot
+            .values
+            .get("messages")
+            .and_then(|m| m.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        // Each invoke adds two messages (the input write plus the node's
+        // append), so `steps` invokes accumulate 2*steps — matching the
+        // sanity_bench_graphs_work invariant (2 invokes => 4 messages).
+        assert_eq!(
+            msg_count,
+            2 * steps,
+            "message count mismatch: got {msg_count}, expected {}",
+            2 * steps
+        );
     }
+}
+
+/// Read-side isolation of the BlobCache: seed a large static channel once,
+/// then hammer get_state (pure reads, no writes). Each read must resolve the
+/// full static context; with the BlobCache the context blob is parsed once and
+/// cloned thereafter.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_sqlite_static_context_reads() {
+    const CONTEXT_SIZE: usize = 128 * 1024;
+    const READS: usize = 200;
+
+    let saver = SqliteSaver::from_conn_string("sqlite::memory:")
+        .await
+        .unwrap();
+    saver.setup().await.unwrap();
+
+    let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
+    channels.insert(
+        "messages".to_string(),
+        Box::new(BinaryOperatorAggregate::new("messages", add_messages_ref))
+            as Box<dyn Channel>,
+    );
+    channels.insert(
+        "context".to_string(),
+        Box::new(LastValue::new("context")) as Box<dyn Channel>,
+    );
+
+    let mut graph = StateGraph::new(channels);
+    graph
+        .add_node(
+            "append",
+            |input: JsonValue, _config: RunnableConfig| async move {
+                let n = input
+                    .get("messages")
+                    .and_then(|m| m.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                Ok(json!({"messages": [make_message(n)]}))
+            },
+        )
+        .unwrap();
+    graph.add_edge(START, "append").unwrap();
+    graph.add_edge("append", END).unwrap();
+    let app = graph
+        .compile_builder()
+        .checkpointer(Arc::new(saver))
+        .build()
+        .unwrap();
+
+    let mut config = RunnableConfig::new();
+    config.insert(
+        "configurable".to_string(),
+        json!({"thread_id": "bench-ctx-reads"}),
+    );
+
+    // Seed the static channel once.
+    app.ainvoke(
+        &json!({"messages": [make_message(0)], "context": "x".repeat(CONTEXT_SIZE)}),
+        &config,
+    )
+    .await
+    .unwrap();
+
+    // Cold read: the cache is empty, so the 128KB context blob must be
+    // fetched and parsed from the DB.
+    let cold_start = Instant::now();
+    let _ = app.get_state(&config).unwrap();
+    let cold = cold_start.elapsed();
+
+    // Warm reads: BlobCache hits, clone-only.
+    let start = Instant::now();
+    for _ in 0..READS {
+        let _ = app.get_state(&config).unwrap();
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "sqlite static context reads: cold {cold:?} (cache miss, parses blob) vs {READS} warm get_state reads of {CONTEXT_SIZE}-byte static channel => {elapsed:?}  ({:?}/read warm)",
+        elapsed / READS as u32
+    );
 }
 
 /// Guards against the benchmark graphs silently becoming no-ops.
