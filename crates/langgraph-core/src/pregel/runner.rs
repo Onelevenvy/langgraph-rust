@@ -139,9 +139,13 @@ impl PregelRunner {
         runtime: Option<&Arc<Runtime>>,
         stream_writer: Option<StreamWriter>,
     ) -> Result<(), RunnerError> {
-        let mut config = task.config.clone();
+        // Inject CONFIG_KEY_SEND into task.config in place. task.config is dead
+        // after this super-step (nothing downstream reads it — writes, triggers
+        // and the checkpoint derive from other fields), so mutating it avoids a
+        // per-task config clone on every super-step.
         {
-            let configurable = config
+            let configurable = task
+                .config
                 .entry("configurable".to_string())
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(obj) = configurable.as_object_mut() {
@@ -175,12 +179,16 @@ impl PregelRunner {
         };
 
         let result = if let Some(ref rt) = effective_runtime {
-            config::with_runtime(config.clone(), rt.clone(), async {
-                task.proc.ainvoke(&task.input, &config).await
+            // with_runtime must own a config for the task-local while the node
+            // borrows one — one clone per task is unavoidable here (this branch
+            // is off the no-store/no-stream hot path).
+            let config = task.config.clone();
+            config::with_runtime(config, rt.clone(), async {
+                task.proc.ainvoke(&task.input, &task.config).await
             })
             .await
         } else {
-            task.proc.ainvoke(&task.input, &config).await
+            task.proc.ainvoke(&task.input, &task.config).await
         };
 
         match result {
@@ -212,9 +220,10 @@ impl PregelRunner {
         task: &mut PregelExecutableTask,
         runtime: Option<&Arc<Runtime>>,
     ) -> Result<(), RunnerError> {
-        let mut config = task.config.clone();
+        // Same in-place CONFIG_KEY_SEND injection as the async path.
         {
-            let configurable = config
+            let configurable = task
+                .config
                 .entry("configurable".to_string())
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(obj) = configurable.as_object_mut() {
@@ -226,11 +235,12 @@ impl PregelRunner {
         }
 
         let result = if let Some(rt) = runtime {
-            config::with_runtime_sync(config.clone(), rt.clone(), || {
-                task.proc.invoke(&task.input, &config)
+            let config = task.config.clone();
+            config::with_runtime_sync(config, rt.clone(), || {
+                task.proc.invoke(&task.input, &task.config)
             })
         } else {
-            task.proc.invoke(&task.input, &config)
+            task.proc.invoke(&task.input, &task.config)
         };
 
         match result {
