@@ -1867,13 +1867,10 @@ impl Runnable for CompiledStateGraph {
         input: &JsonValue,
         config: &RunnableConfig,
     ) -> Result<JsonValue, RunnableError> {
-        // Block on the async implementation
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(self.run_pregel(input, config)),
-            Err(_) => tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(self.run_pregel(input, config)),
-        }
+        // Block on the async implementation, reusing the caller's runtime or a
+        // process-global cached one (the old per-call `Runtime::new()` spawned
+        // worker threads on every sync invoke from outside a tokio context).
+        crate::config::block_on(self.run_pregel(input, config))
     }
 
     async fn ainvoke(

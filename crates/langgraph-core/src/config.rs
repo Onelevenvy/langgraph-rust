@@ -3,7 +3,9 @@ use langgraph_checkpoint::config::RunnableConfig;
 use langgraph_checkpoint::store::base::BaseStore;
 use serde_json::Value as JsonValue;
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, OnceLock};
+use tokio::runtime::Runtime as TokioRuntime;
 use tokio::sync::mpsc;
 
 // Task-local config for async contexts
@@ -117,3 +119,30 @@ where
     });
     result
 }
+
+/// Block on a future, reusing a process-global Tokio runtime when the caller
+/// is outside a runtime.
+///
+/// The sync `invoke()` entry points used to build and drop a full multi-thread
+/// `Runtime` on every call made outside a Tokio context — each construction
+/// spawns `num_cpus` worker threads (~100µs+). A single cached runtime
+/// amortizes that cost while preserving the exact scheduler semantics a
+/// per-call `Runtime::new()` provided (multi-thread, IO + time enabled),
+/// including the `block_in_place` bridge checkpoint savers rely on (it checks
+/// `runtime_flavor() != CurrentThread`). When the caller is already inside a
+/// runtime, `block_on` on its handle instead — no runtime is created or cached.
+pub fn block_on<F>(fut: F) -> F::Output
+where
+    F: Future,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(fut),
+        Err(_) => CACHED_RUNTIME
+            .get_or_init(|| {
+                tokio::runtime::Runtime::new().expect("failed to build the shared Tokio runtime")
+            })
+            .block_on(fut),
+    }
+}
+
+static CACHED_RUNTIME: OnceLock<TokioRuntime> = OnceLock::new();

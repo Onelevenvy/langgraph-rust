@@ -889,3 +889,47 @@ async fn sanity_bench_graphs_work() {
         Some(4)
     );
 }
+
+/// P2-1: sync `invoke()` from outside a tokio context used to build and drop a
+/// full multi-thread Runtime per call (each construction spawns worker threads,
+/// ~100µs+). A process-global cached runtime amortizes that.
+///
+/// Plain `#[test]` — NOT `#[tokio::test]` — so this runs outside a tokio
+/// context and actually hits the `Runtime::new()`/cached-runtime path in
+/// `CompiledStateGraph::invoke`.
+#[test]
+#[ignore]
+fn bench_sync_invoke_runtime_cache() {
+    let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
+    channels.insert(
+        "out".to_string(),
+        Box::new(LastValue::new("out")) as Box<dyn Channel>,
+    );
+    let mut graph = StateGraph::new(channels);
+    graph
+        .add_node("n", |_: JsonValue, _: RunnableConfig| async move {
+            Ok(json!({"out": 1}))
+        })
+        .unwrap();
+    graph.add_edge(START, "n").unwrap();
+    graph.add_edge("n", END).unwrap();
+    let app = graph.compile().unwrap();
+    let config = RunnableConfig::new();
+
+    // Warm up: the first invoke builds the shared runtime.
+    assert_eq!(
+        app.invoke(&json!({}), &config).unwrap().get("out"),
+        Some(&json!(1))
+    );
+
+    const N: usize = 200;
+    let t = Instant::now();
+    for _ in 0..N {
+        app.invoke(&json!({}), &config).unwrap();
+    }
+    let elapsed = t.elapsed();
+    println!(
+        "sync invoke x{N} (outside tokio) => {elapsed:?}  ({:?}/invoke)",
+        elapsed / N as u32
+    );
+}
