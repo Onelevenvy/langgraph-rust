@@ -22,6 +22,16 @@ fn as_f64(v: &JsonValue) -> Option<f64> {
 /// e.g. 10 > 9. Falls back to string lexical order for non-numeric
 /// version schemes (e.g. UUIDs).
 fn version_gt(a: &JsonValue, b: &JsonValue) -> bool {
+    // Fast path: engine versions are fixed-width zero-padded decimal strings
+    // (`format!("{:032}", n)`), for which lexical == numeric ordering. Comparing
+    // equal-length all-digit strings lexically is exact (avoids f64, which
+    // cannot represent versions past 2^53) and skips the per-compare f64 parse
+    // that dominated the max_by in apply_writes.
+    if let (Some(a_s), Some(b_s)) = (a.as_str(), b.as_str()) {
+        if a_s.len() == b_s.len() && a_s.bytes().all(|b| b.is_ascii_digit()) {
+            return a_s > b_s;
+        }
+    }
     if let (Some(an), Some(bn)) = (as_f64(a), as_f64(b)) {
         return an > bn;
     }
@@ -201,20 +211,32 @@ fn create_scratchpad(
 ///
 /// This is the "Update" phase of the BSP cycle. It:
 /// 1. Updates versions_seen for each task's trigger channels
-/// 2. Computes a single global next_version from the max of all channel versions
-/// 3. Consumes trigger channels (flushes ephemeral values) and bumps their versions
-/// 4. Groups writes by channel, applies them, and bumps versions
-/// 5. Notifies un-updated channels of the new superstep (bump_step)
-/// 6. Calls finish() on all channels if no trigger channels were updated
+/// 2. Consumes trigger channels (flushes ephemeral values) and bumps their versions
+/// 3. Groups writes by channel, applies them, and bumps versions
+/// 4. Notifies un-updated channels of the new superstep (bump_step)
+/// 5. Calls finish() on all channels if no trigger channels were updated
+///
+/// `next_version` is supplied by the caller: the BSP loop keeps a running version
+/// counter so we avoid a per-superstep max over every channel version (which was
+/// O(#channels) on the hot path). All channels bumped in this superstep share it,
+/// mirroring Python's behavior.
+///
+/// `sweep_candidates` bounds the step-5 notify sweep: only channels that were
+/// available at the end of the *previous* super-step can still hold a lingering
+/// value now (that sweep clears everything else), so the BSP loop passes the
+/// previous super-step's `updated` set and only those channels are touched.
+/// `None` sweeps every channel (first super-step, where directly-written input
+/// channels may linger, and non-loop callers).
 ///
 /// Returns the set of updated channel names.
 pub fn apply_writes(
     channels: &mut HashMap<String, Box<dyn Channel>>,
-    tasks: &[PregelExecutableTask],
+    tasks: &mut [PregelExecutableTask],
     versions_seen: &mut HashMap<String, HashMap<String, JsonValue>>,
     channel_versions: &mut ChannelVersions,
     trigger_to_nodes: &TriggerToNodes,
-    get_next_version: impl Fn(Option<&JsonValue>) -> JsonValue,
+    next_version: &JsonValue,
+    sweep_candidates: Option<&HashSet<String>>,
 ) -> HashSet<String> {
     let mut updated = HashSet::new();
 
@@ -223,7 +245,7 @@ pub fn apply_writes(
     let bump_step = tasks.iter().any(|t| !t.triggers.is_empty());
 
     // 1. Update versions_seen for each task's trigger channels
-    for task in tasks {
+    for task in tasks.iter() {
         let seen = versions_seen.entry(task.name.clone()).or_default();
         for trigger in &task.triggers {
             if let Some(ver) = channel_versions.get(trigger) {
@@ -231,15 +253,6 @@ pub fn apply_writes(
             }
         }
     }
-
-    // 2. Compute a single global next_version from the max of all channel versions.
-    //    This mirrors Python's behavior: all channels updated in the same superstep
-    //    share the same version "timestamp".
-    let max_version = channel_versions
-        .values()
-        .max_by(|a, b| version_gt_partial(a, b))
-        .cloned();
-    let next_version = get_next_version(max_version.as_ref());
 
     // 3. Consume trigger channels (flush ephemeral/topic values).
     //    Filter out RESERVED channels (matching Python behavior).
@@ -260,19 +273,18 @@ pub fn apply_writes(
         }
     }
 
-    // 4. Group writes by channel.
-    //    Filter out all reserved keys (NO_WRITES, PUSH, RESUME, INTERRUPT,
-    //    RETURN, ERROR, config keys, etc.) — only real channel writes proceed.
+    // 4. Group writes by channel, DRAINING each task's write buffer.
+    //    Streaming Updates (state.rs) already ran over `task.writes`, and the
+    //    get_state snapshot path computes `next` before calling apply_writes,
+    //    so nothing reads task.writes after this point — move the values out
+    //    instead of cloning them.
     let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
-    for task in tasks {
-        for (chan, val) in &task.writes {
+    for task in tasks.iter_mut() {
+        for (chan, val) in std::mem::take(&mut task.writes) {
             if RESERVED.contains(&chan.as_str()) {
                 continue;
             }
-            writes_by_channel
-                .entry(chan.clone())
-                .or_default()
-                .push(val.clone());
+            writes_by_channel.entry(chan).or_default().push(val);
         }
     }
 
@@ -291,12 +303,37 @@ pub fn apply_writes(
 
     // 6. Channels that weren't updated in this step are notified of a new step.
     //    This allows ephemeral channels to clear themselves and notify downstream.
+    //    Only the previous super-step's `updated` channels can still be available
+    //    here (last superstep's sweep cleared everything else), so a bounded sweep
+    //    is behaviorally identical to the old O(#channels) scan. `None` = all.
     if bump_step {
-        for (chan, ch) in channels.iter() {
-            if ch.is_available() && !updated.contains(chan) && ch.update(&[]).unwrap_or(false) {
-                channel_versions.insert(chan.clone(), next_version.clone());
-                if ch.is_available() {
-                    updated.insert(chan.clone());
+        match sweep_candidates {
+            Some(candidates) => {
+                for chan in candidates {
+                    if updated.contains(chan) {
+                        continue;
+                    }
+                    if let Some(ch) = channels.get(chan) {
+                        if ch.is_available() && ch.update(&[]).unwrap_or(false) {
+                            channel_versions.insert(chan.clone(), next_version.clone());
+                            if ch.is_available() {
+                                updated.insert(chan.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            None => {
+                for (chan, ch) in channels.iter() {
+                    if ch.is_available()
+                        && !updated.contains(chan)
+                        && ch.update(&[]).unwrap_or(false)
+                    {
+                        channel_versions.insert(chan.clone(), next_version.clone());
+                        if ch.is_available() {
+                            updated.insert(chan.clone());
+                        }
+                    }
                 }
             }
         }
@@ -316,27 +353,6 @@ pub fn apply_writes(
     }
 
     updated
-}
-
-/// Helper for comparing versions in max_by.
-///
-/// Tries numeric comparison first (via f64), falls back to string lexical order.
-fn version_gt_partial(a: &JsonValue, b: &JsonValue) -> std::cmp::Ordering {
-    if let (Some(an), Some(bn)) = (as_f64(a), as_f64(b)) {
-        return an.partial_cmp(&bn).unwrap_or(std::cmp::Ordering::Equal);
-    }
-    // Fallback: string lexical comparison
-    let a_str = match a {
-        JsonValue::String(s) => s.as_str(),
-        JsonValue::Number(n) => return n.to_string().cmp(&b.to_string()),
-        _ => return std::cmp::Ordering::Equal,
-    };
-    let b_str = match b {
-        JsonValue::String(s) => s.as_str(),
-        JsonValue::Number(n) => return a_str.cmp(&n.to_string()),
-        _ => return std::cmp::Ordering::Equal,
-    };
-    a_str.cmp(b_str)
 }
 
 /// Check if we should interrupt before executing the given nodes.

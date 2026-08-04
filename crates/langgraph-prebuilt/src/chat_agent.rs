@@ -66,8 +66,8 @@ impl ReActAgent {
 }
 
 /// Reducer for messages channel: appends new messages to existing ones.
-fn messages_reducer(current: &JsonValue, update: &JsonValue) -> JsonValue {
-    add_messages(current.clone(), update.clone())
+fn messages_reducer(current: JsonValue, update: &JsonValue) -> JsonValue {
+    add_messages(current, update)
 }
 
 /// Create a ReAct agent with the given model and tools.
@@ -206,7 +206,7 @@ mod tests {
             {"type": "ai", "content": "Hello"}
         ]);
 
-        let merged = messages_reducer(&current, &update);
+        let merged = messages_reducer(current, &update);
         let messages = merged.as_array().unwrap();
         assert_eq!(messages.len(), 2);
     }
@@ -220,7 +220,7 @@ mod tests {
             "result": "done"
         });
 
-        let _merged = messages_reducer(&current, &update);
+        let _merged = messages_reducer(current, &update);
         // add_messages merges the messages arrays
         // "result" is not messages, so it gets appended as a message
     }

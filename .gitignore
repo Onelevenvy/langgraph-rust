@@ -110,3 +110,4 @@ crates/langgraph-tracing/frontend/node_modules/*
 publish.sh
 publish.ps1
 .codebuddy/*
+AGENTS.md

@@ -25,10 +25,10 @@ impl Channel for LastValue {
         self.value.read().clone()
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
-            value: RwLock::new(checkpoint.cloned()),
+            value: RwLock::new(checkpoint),
         })
     }
 
@@ -105,10 +105,10 @@ impl Channel for LastValueAfterFinish {
         }
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
-            value: RwLock::new(checkpoint.cloned()),
+            value: RwLock::new(checkpoint),
             pending: RwLock::new(None),
             finished: RwLock::new(false),
         })
@@ -196,7 +196,7 @@ mod tests {
         let cp = ch.checkpoint();
         assert_eq!(cp, Some(serde_json::json!("hello")));
 
-        let restored = ch.from_checkpoint(cp.as_ref());
+        let restored = ch.from_checkpoint(cp);
         assert_eq!(restored.get().unwrap(), serde_json::json!("hello"));
     }
 

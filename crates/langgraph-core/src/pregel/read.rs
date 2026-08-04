@@ -5,6 +5,7 @@ use std::sync::Arc;
 ///
 /// This is NOT a Runnable itself — it's a container from which
 /// `PregelExecutableTask`s are built during each super-step.
+#[derive(Clone)]
 pub struct PregelNode {
     /// Which channels to read as input.
     /// If the node reads a single channel, this is `[channel_name]`.

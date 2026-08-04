@@ -68,27 +68,6 @@ SELECT
 FROM checkpoints
 "#;
 
-/// Fetch all blobs (channel values) for a given checkpoint by joining
-/// `checkpoint.channel_versions` with the blobs table.
-///
-/// SQLite stores `version` as TEXT, while `je.value` from `json_each` may
-/// be a JSON number or string depending on how the checkpoint was
-/// produced. The explicit `CAST(... AS TEXT)` normalizes both sides so
-/// integer and string versions compare equal.
-pub const SELECT_BLOBS_SQL: &str = r#"
-SELECT bl.channel, bl.type, bl.blob
-FROM checkpoints cp
-CROSS JOIN json_each(json_extract(cp.checkpoint, '$.channel_versions')) je
-INNER JOIN checkpoint_blobs bl
-    ON bl.thread_id = cp.thread_id
-    AND bl.checkpoint_ns = cp.checkpoint_ns
-    AND bl.channel = je.key
-    AND bl.version = CAST(je.value AS TEXT)
-WHERE cp.thread_id = ?1
-  AND cp.checkpoint_ns = ?2
-  AND cp.checkpoint_id = ?3
-"#;
-
 /// Fetch pending writes for a given checkpoint, ordered by task and idx.
 pub const SELECT_WRITES_SQL: &str = r#"
 SELECT task_id, channel, type, blob, idx, task_path

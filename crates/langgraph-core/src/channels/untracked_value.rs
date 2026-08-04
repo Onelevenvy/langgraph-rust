@@ -25,7 +25,7 @@ impl Channel for UntrackedValue {
         None
     }
 
-    fn from_checkpoint(&self, _checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, _checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
             value: RwLock::new(None),

@@ -12,6 +12,7 @@ use sqlx::Row;
 use langgraph_checkpoint::checkpoint::base::{
     get_checkpoint_id, get_checkpoint_metadata, writes_idx_map, BaseCheckpointSaver,
 };
+use langgraph_checkpoint::checkpoint::blob_cache::{BlobCache, BlobCacheKey};
 use langgraph_checkpoint::checkpoint::types::*;
 use langgraph_checkpoint::config::RunnableConfig;
 use langgraph_checkpoint::error::CheckpointError;
@@ -23,6 +24,55 @@ use crate::queries::*;
 /// A dumped blob row: (thread_id, checkpoint_ns, channel, type, checkpoint_id, data)
 type BlobDumpRow = (String, String, String, String, String, Option<Vec<u8>>);
 
+/// A blob row fetched to satisfy a cache miss, indexed by (channel, version).
+struct FetchedBlob {
+    type_tag: String,
+    blob: Option<Vec<u8>>,
+}
+
+/// Normalize a channel version to the string form used in the `version`
+/// column and the BlobCache key. `dump_blobs` and `load_blobs` must agree so
+/// write keys and read lookups stay in sync.
+fn version_to_string(ver: &JsonValue) -> Option<String> {
+    match ver {
+        JsonValue::String(s) => Some(s.clone()),
+        JsonValue::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// Serialization view of a `Checkpoint` used for the `checkpoints` row.
+///
+/// `channel_values` live in `checkpoint_blobs`, but the row's JSON must stay
+/// deserializable as a full `Checkpoint`, so it is emitted as an empty object
+/// placeholder — encoding the real values here only to strip them would cost
+/// a full-state copy on every super-step.
+#[derive(serde::Serialize)]
+struct CheckpointRowView<'a> {
+    v: i64,
+    id: &'a str,
+    ts: &'a str,
+    channel_values: serde_json::Map<String, JsonValue>,
+    channel_versions: &'a ChannelVersions,
+    versions_seen: &'a HashMap<String, ChannelVersions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_channels: &'a Option<Vec<String>>,
+}
+
+impl<'a> From<&'a Checkpoint> for CheckpointRowView<'a> {
+    fn from(cp: &'a Checkpoint) -> Self {
+        Self {
+            v: cp.v,
+            id: &cp.id,
+            ts: &cp.ts,
+            channel_values: serde_json::Map::new(),
+            channel_versions: &cp.channel_versions,
+            versions_seen: &cp.versions_seen,
+            updated_channels: &cp.updated_channels,
+        }
+    }
+}
+
 /// Async SQLite checkpoint saver using sqlx.
 ///
 /// Uses a three-table schema (`checkpoints`, `checkpoint_blobs`,
@@ -30,6 +80,9 @@ type BlobDumpRow = (String, String, String, String, String, Option<Vec<u8>>);
 pub struct SqliteSaver {
     pool: SqlitePool,
     serde: Arc<dyn SerializerProtocol>,
+    /// Version-keyed cache of deserialized blob values, so repeated reads of
+    /// unchanged channels (e.g. a static context) skip the DB fetch + parse.
+    blob_cache: Arc<BlobCache>,
 }
 
 impl SqliteSaver {
@@ -38,12 +91,17 @@ impl SqliteSaver {
         Self {
             pool,
             serde: Arc::new(JsonPlusSerializer::new()),
+            blob_cache: Arc::new(BlobCache::new()),
         }
     }
 
     /// Create a new SqliteSaver with a custom serializer.
     pub fn with_serde(pool: SqlitePool, serde: Arc<dyn SerializerProtocol>) -> Self {
-        Self { pool, serde }
+        Self {
+            pool,
+            serde,
+            blob_cache: Arc::new(BlobCache::new()),
+        }
     }
 
     /// Create a SqliteSaver from a connection string.
@@ -151,31 +209,90 @@ impl SqliteSaver {
         &self,
         thread_id: &str,
         checkpoint_ns: &str,
-        checkpoint_id: &str,
+        channel_versions: &ChannelVersions,
     ) -> Result<HashMap<String, JsonValue>, CheckpointError> {
-        let rows = sqlx::query(SELECT_BLOBS_SQL)
-            .bind(thread_id)
-            .bind(checkpoint_ns)
-            .bind(checkpoint_id)
+        let mut values: HashMap<String, JsonValue> = HashMap::new();
+        let mut misses: Vec<BlobCacheKey> = Vec::new();
+
+        // Consult the cache first: blob values are immutable per (channel,
+        // version), so a hit is a clone with no DB round-trip or parse. This
+        // is what turns repeated reads of an unchanged large channel (e.g. a
+        // static context) into O(clone) instead of O(DB fetch + parse).
+        for (channel, ver) in channel_versions {
+            let Some(ver_str) = version_to_string(ver) else {
+                continue;
+            };
+            let key = (
+                thread_id.to_string(),
+                checkpoint_ns.to_string(),
+                channel.clone(),
+                ver_str,
+            );
+            if let Some(v) = self.blob_cache.get(&key) {
+                values.insert(channel.clone(), v);
+            } else {
+                misses.push(key);
+            }
+        }
+        if misses.is_empty() {
+            return Ok(values);
+        }
+
+        // Fetch only the missing (channel, version) pairs. Row-value IN needs
+        // SQLite 3.15+ (bundled with sqlx). If a checkpoint ever has more
+        // pairs than SQLITE_MAX_VARIABLE_NUMBER (32766 by default), the misses
+        // would need chunking — not needed for realistic channel counts.
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT channel, version, type, blob FROM checkpoint_blobs WHERE thread_id = ",
+        );
+        qb.push_bind(thread_id)
+            .push(" AND checkpoint_ns = ")
+            .push_bind(checkpoint_ns)
+            .push(" AND (channel, version) IN (");
+        let mut first = true;
+        for key in &misses {
+            if !first {
+                qb.push(", ");
+            }
+            first = false;
+            qb.push("(")
+                .push_bind(key.2.as_str())
+                .push(", ")
+                .push_bind(key.3.as_str())
+                .push(")");
+        }
+        qb.push(")");
+        let rows = qb
+            .build()
             .fetch_all(&self.pool)
             .await
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
 
-        let mut values: HashMap<String, JsonValue> = HashMap::new();
+        // Index fetched rows by (channel, version) so each miss maps back
+        // deterministically.
+        let mut by_key: HashMap<(String, String), FetchedBlob> = HashMap::new();
         for row in rows {
             let channel: String = row.get("channel");
+            let version: String = row.get("version");
             let type_tag: String = row.get("type");
             let blob: Option<Vec<u8>> = row.try_get("blob").ok();
+            by_key.insert((channel, version), FetchedBlob { type_tag, blob });
+        }
 
-            if type_tag == "empty" || blob.is_none() {
-                continue;
-            }
-            let bytes = blob.unwrap();
-            let val = match self.serde.loads_typed(&type_tag, &bytes) {
-                Ok(any_val) => any_to_json(any_val),
-                Err(_) => continue,
+        for key in misses {
+            let Some(fetched) = by_key.get(&(key.2.clone(), key.3.clone())) else {
+                continue; // no blob row: leave out, do not cache
             };
-            values.insert(channel, val);
+            if fetched.type_tag == "empty" {
+                continue; // empty marker: leave out, do not cache
+            }
+            if let Some(bytes) = &fetched.blob {
+                if let Ok(any_val) = self.serde.loads_typed(&fetched.type_tag, bytes) {
+                    let val = any_to_json(any_val);
+                    self.blob_cache.insert(key.clone(), val.clone());
+                    values.insert(key.2, val);
+                }
+            }
         }
         Ok(values)
     }
@@ -224,10 +341,8 @@ impl SqliteSaver {
     ) -> Vec<BlobDumpRow> {
         let mut result = Vec::new();
         for (channel, ver) in versions {
-            let ver_str = match ver {
-                JsonValue::String(s) => s.clone(),
-                JsonValue::Number(n) => n.to_string(),
-                _ => continue,
+            let Some(ver_str) = version_to_string(ver) else {
+                continue;
             };
             if let Some(val) = values.get(channel) {
                 if let Ok((type_tag, blob)) = self.serde.dumps_typed(val) {
@@ -341,14 +456,17 @@ impl SqliteSaver {
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
             let mut tuple = Self::row_to_tuple(&row)?;
-            // Reconcile channel values from blobs.
+            // Merge blob values (version-joined) over the row's channel_values
+            // (see aget_tuple for the rationale). Rows of one thread share the
+            // same stable (channel, version) entries, so after the first row
+            // the rest are BlobCache hits.
             let thread_id = row.get::<String, _>("thread_id");
             let ns = row.get::<String, _>("checkpoint_ns");
             let cid = tuple.checkpoint.id.clone();
-            let blob_values = self.load_blobs(&thread_id, &ns, &cid).await?;
-            if !blob_values.is_empty() {
-                tuple.checkpoint.channel_values = blob_values;
-            }
+            let blob_values = self
+                .load_blobs(&thread_id, &ns, &tuple.checkpoint.channel_versions)
+                .await?;
+            tuple.checkpoint.channel_values.extend(blob_values);
             tuple.pending_writes = Some(self.load_writes(&thread_id, &ns, &cid).await?);
             results.push(tuple);
         }
@@ -443,7 +561,7 @@ impl BaseCheckpointSaver for SqliteSaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -517,10 +635,14 @@ impl BaseCheckpointSaver for SqliteSaver {
 
         let mut tuple = Self::row_to_tuple(&row)?;
         let cid = tuple.checkpoint.id.clone();
-        let blob_values = self.load_blobs(thread_id, checkpoint_ns, &cid).await?;
-        if !blob_values.is_empty() {
-            tuple.checkpoint.channel_values = blob_values;
-        }
+        // Blob rows are version-addressed and written incrementally, so the
+        // (channel, version) lookup resolves every channel's value regardless
+        // of which checkpoint created the blob. Merge (not replace) so values
+        // still resolve even if a blob row is ever missing.
+        let blob_values = self
+            .load_blobs(thread_id, checkpoint_ns, &tuple.checkpoint.channel_versions)
+            .await?;
+        tuple.checkpoint.channel_values.extend(blob_values);
         tuple.pending_writes = Some(self.load_writes(thread_id, checkpoint_ns, &cid).await?);
         Ok(Some(tuple))
     }
@@ -528,7 +650,7 @@ impl BaseCheckpointSaver for SqliteSaver {
     async fn aput(
         &self,
         config: &RunnableConfig,
-        checkpoint: &Checkpoint,
+        checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
         new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
@@ -548,17 +670,10 @@ impl BaseCheckpointSaver for SqliteSaver {
 
         let next_config = Self::make_config(thread_id, checkpoint_ns, &checkpoint.id);
 
-        // Strip channel_values from the JSON checkpoint payload to avoid
-        // duplicating them in the row body — they live in checkpoint_blobs.
-        let mut checkpoint_value = serde_json::to_value(checkpoint)
-            .map_err(|e| CheckpointError::Storage(e.to_string()))?;
-        if let Some(obj) = checkpoint_value.as_object_mut() {
-            obj.insert(
-                "channel_values".to_string(),
-                JsonValue::Object(Default::default()),
-            );
-        }
-        let checkpoint_text = serde_json::to_string(&checkpoint_value)
+        // Serialize only the checkpoint's metadata fields — channel_values live
+        // in checkpoint_blobs, so encoding them here (only to strip them
+        // afterwards) would cost a full-state copy on every super-step.
+        let checkpoint_text = serde_json::to_string(&CheckpointRowView::from(&checkpoint))
             .map_err(|e| CheckpointError::Storage(e.to_string()))?;
         // Merge config-level fields (e.g. `langgraph_step`) into the
         // metadata before persisting, so `list(filter=...)` over those
@@ -692,6 +807,10 @@ impl BaseCheckpointSaver for SqliteSaver {
     }
 
     async fn adelete_thread(&self, thread_id: String) -> Result<(), CheckpointError> {
+        // Drop cached blob values for the thread: version strings restart at 1
+        // if the thread is recreated with the same id, and stale entries would
+        // otherwise be served as the new values.
+        self.blob_cache.remove_thread(&thread_id);
         let mut tx = self
             .pool
             .begin()
@@ -796,7 +915,10 @@ mod tests {
             ..Default::default()
         };
 
-        let next = saver.aput(&cfg, &cp, &metadata, &versions).await.unwrap();
+        let next = saver
+            .aput(&cfg, cp.clone(), &metadata, &versions)
+            .await
+            .unwrap();
 
         // The returned config should reference the new checkpoint id
         let returned_cid = next
@@ -826,7 +948,7 @@ mod tests {
         let (cp, versions) = make_checkpoint(vec![("a", serde_json::json!(1))]);
         let cfg = config_for("thread-W");
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
             .await
             .unwrap();
 
@@ -866,7 +988,7 @@ mod tests {
             let (cp, versions) = make_checkpoint(vec![("x", serde_json::json!(i))]);
             ids.push(cp.id.clone());
             saver
-                .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+                .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
                 .await
                 .unwrap();
         }
@@ -896,7 +1018,7 @@ mod tests {
         let (cp, versions) = make_checkpoint(vec![("x", serde_json::json!(1))]);
         let cfg = config_for("thread-D");
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &versions)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &versions)
             .await
             .unwrap();
         let cfg_with_id = config_with_id("thread-D", &cp.id);
@@ -932,7 +1054,12 @@ mod tests {
         let mut versions1: ChannelVersions = HashMap::new();
         versions1.insert("counter".into(), JsonValue::Number(1.into()));
         saver
-            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &versions1)
+            .aput(
+                &cfg,
+                cp1.clone(),
+                &CheckpointMetadata::default(),
+                &versions1,
+            )
             .await
             .unwrap();
 
@@ -947,7 +1074,12 @@ mod tests {
         let mut versions2: ChannelVersions = HashMap::new();
         versions2.insert("counter".into(), JsonValue::Number(2.into()));
         saver
-            .aput(&cfg, &cp2, &CheckpointMetadata::default(), &versions2)
+            .aput(
+                &cfg,
+                cp2.clone(),
+                &CheckpointMetadata::default(),
+                &versions2,
+            )
             .await
             .unwrap();
 
@@ -963,6 +1095,95 @@ mod tests {
         let earlier = saver.aget_tuple(&cfg_cp1).await.unwrap().unwrap();
         assert_eq!(
             earlier.checkpoint.channel_values.get("counter"),
+            Some(&JsonValue::Number(1.into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_incremental_blob_writes() {
+        // cp1: channels a and b both written at version 1.
+        let saver = fresh_saver().await;
+        let cfg = config_for("thread-INC");
+        let mut cp1 = Checkpoint::empty();
+        cp1.channel_values
+            .insert("a".into(), JsonValue::Number(1.into()));
+        cp1.channel_values
+            .insert("b".into(), JsonValue::Number(1.into()));
+        cp1.channel_versions
+            .insert("a".into(), JsonValue::String("1".into()));
+        cp1.channel_versions
+            .insert("b".into(), JsonValue::String("1".into()));
+        let mut versions1: ChannelVersions = HashMap::new();
+        versions1.insert("a".into(), JsonValue::String("1".into()));
+        versions1.insert("b".into(), JsonValue::String("1".into()));
+        let next1 = saver
+            .aput(
+                &cfg,
+                cp1.clone(),
+                &CheckpointMetadata::default(),
+                &versions1,
+            )
+            .await
+            .unwrap();
+
+        // cp2: only channel a is updated — new_versions carries just the delta.
+        let mut cp2 = Checkpoint::empty();
+        cp2.channel_values
+            .insert("a".into(), JsonValue::Number(2.into()));
+        cp2.channel_values
+            .insert("b".into(), JsonValue::Number(1.into()));
+        cp2.channel_versions
+            .insert("a".into(), JsonValue::String("2".into()));
+        cp2.channel_versions
+            .insert("b".into(), JsonValue::String("1".into()));
+        let mut versions2: ChannelVersions = HashMap::new();
+        versions2.insert("a".into(), JsonValue::String("2".into()));
+        saver
+            .aput(
+                &next1,
+                cp2.clone(),
+                &CheckpointMetadata::default(),
+                &versions2,
+            )
+            .await
+            .unwrap();
+
+        // Blob rows are keyed by (channel, version): cp2 only adds a@2, so
+        // the table holds exactly a@1, b@1, a@2 (a full rewrite would add b@2).
+        let blob_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM checkpoint_blobs WHERE thread_id = 'thread-INC'",
+        )
+        .fetch_one(&saver.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            blob_count, 3,
+            "expected blobs a@1, b@1, a@2, got {blob_count}"
+        );
+
+        // cp2 reads back both channels: a@2 via cp2's blob, b@1 via the
+        // version-addressed blob written by cp1 (b's version never moved).
+        let cfg_cp2 = config_with_id("thread-INC", &cp2.id);
+        let tuple = saver.aget_tuple(&cfg_cp2).await.unwrap().unwrap();
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("a"),
+            Some(&JsonValue::Number(2.into()))
+        );
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&JsonValue::Number(1.into()))
+        );
+
+        // cp1 remains fully readable (older rows rely on blobs, and b@1 still
+        // matches cp2's join as well since b's version never moved).
+        let cfg_cp1 = config_with_id("thread-INC", &cp1.id);
+        let earlier = saver.aget_tuple(&cfg_cp1).await.unwrap().unwrap();
+        assert_eq!(
+            earlier.checkpoint.channel_values.get("a"),
+            Some(&JsonValue::Number(1.into()))
+        );
+        assert_eq!(
+            earlier.checkpoint.channel_values.get("b"),
             Some(&JsonValue::Number(1.into()))
         );
     }
@@ -984,7 +1205,7 @@ mod tests {
                 step: Some(step),
                 ..Default::default()
             };
-            saver.aput(&cfg, &cp, &meta, &vers).await.unwrap();
+            saver.aput(&cfg, cp.clone(), &meta, &vers).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
 
@@ -1059,7 +1280,7 @@ mod tests {
         // Metadata passed in does NOT have step set — it should be filled
         // from the config.
         saver
-            .aput(&cfg, &cp, &CheckpointMetadata::default(), &vers)
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &vers)
             .await
             .unwrap();
 
@@ -1086,12 +1307,7 @@ mod tests {
         let cp_clone = cp.clone();
         let vers_clone = vers.clone();
         let put_result = tokio::task::spawn_blocking(move || {
-            s2.put(
-                &cfg2,
-                &cp_clone,
-                &CheckpointMetadata::default(),
-                &vers_clone,
-            )
+            s2.put(&cfg2, cp_clone, &CheckpointMetadata::default(), &vers_clone)
         })
         .await
         .unwrap();
@@ -1113,7 +1329,7 @@ mod tests {
         let (cp1, vers1) = make_checkpoint(vec![("x", serde_json::json!("a"))]);
         let cfg = config_for("thread-P");
         let next1 = saver
-            .aput(&cfg, &cp1, &CheckpointMetadata::default(), &vers1)
+            .aput(&cfg, cp1.clone(), &CheckpointMetadata::default(), &vers1)
             .await
             .unwrap();
 
@@ -1126,7 +1342,7 @@ mod tests {
         // becomes the parent_checkpoint_id of cp2.
         let (cp2, vers2) = make_checkpoint(vec![("x", serde_json::json!("b"))]);
         saver
-            .aput(&next1, &cp2, &CheckpointMetadata::default(), &vers2)
+            .aput(&next1, cp2.clone(), &CheckpointMetadata::default(), &vers2)
             .await
             .unwrap();
 
@@ -1141,5 +1357,114 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap();
         assert_eq!(parent_id, cp1.id);
+    }
+
+    #[tokio::test]
+    async fn test_blob_cache_serves_reads_without_db() {
+        let saver = fresh_saver().await;
+        let (cp, vers) = make_checkpoint(vec![("ctx", serde_json::json!("static-value"))]);
+        let cfg = config_for("thread-C");
+        saver
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &vers)
+            .await
+            .unwrap();
+
+        // First read populates the cache.
+        let cfg_id = config_with_id("thread-C", &cp.id);
+        let t1 = saver.aget_tuple(&cfg_id).await.unwrap().unwrap();
+        assert_eq!(
+            t1.checkpoint.channel_values.get("ctx"),
+            Some(&serde_json::json!("static-value"))
+        );
+
+        // Delete the blob rows behind the saver's back: a cache hit must still
+        // resolve the value with no blob row to fetch.
+        sqlx::query("DELETE FROM checkpoint_blobs")
+            .execute(&saver.pool)
+            .await
+            .unwrap();
+
+        let t2 = saver.aget_tuple(&cfg_id).await.unwrap().unwrap();
+        assert_eq!(
+            t2.checkpoint.channel_values.get("ctx"),
+            Some(&serde_json::json!("static-value")),
+            "second read should be served from the BlobCache"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_thread_invalidates_blob_cache() {
+        let saver = fresh_saver().await;
+        let cfg = config_for("thread-D");
+
+        // First thread incarnation: value at version 1.
+        let (cp1, vers1) = make_checkpoint(vec![("a", serde_json::json!("first"))]);
+        saver
+            .aput(&cfg, cp1.clone(), &CheckpointMetadata::default(), &vers1)
+            .await
+            .unwrap();
+        let t1 = saver
+            .aget_tuple(&config_with_id("thread-D", &cp1.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            t1.checkpoint.channel_values.get("a"),
+            Some(&serde_json::json!("first"))
+        );
+
+        // Delete the thread, then recreate it with the SAME id and a DIFFERENT
+        // value at the same version. The cache must not serve the stale value
+        // (version strings restart at 1 for a recreated thread).
+        saver.adelete_thread("thread-D".to_string()).await.unwrap();
+        let (cp2, vers2) = make_checkpoint(vec![("a", serde_json::json!("second"))]);
+        saver
+            .aput(&cfg, cp2.clone(), &CheckpointMetadata::default(), &vers2)
+            .await
+            .unwrap();
+        let t2 = saver
+            .aget_tuple(&config_with_id("thread-D", &cp2.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            t2.checkpoint.channel_values.get("a"),
+            Some(&serde_json::json!("second")),
+            "delete_thread must invalidate cached values for the recreated thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_blobs_empty_channel_versions() {
+        let saver = fresh_saver().await;
+        let values = saver.load_blobs("t", "", &HashMap::new()).await.unwrap();
+        assert!(values.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cleared_channel_not_returned() {
+        let saver = fresh_saver().await;
+        let mut cp = Checkpoint::empty();
+        cp.id = "cp-cleared".to_string();
+        cp.channel_versions
+            .insert("a".into(), JsonValue::Number(2.into()));
+        let mut vers = HashMap::new();
+        vers.insert("a".into(), JsonValue::Number(2.into()));
+        // No channel_values entry for `a` → an "empty" marker blob row.
+        let cfg = config_for("thread-E");
+        saver
+            .aput(&cfg, cp.clone(), &CheckpointMetadata::default(), &vers)
+            .await
+            .unwrap();
+
+        let t = saver
+            .aget_tuple(&config_with_id("thread-E", &cp.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            t.checkpoint.channel_values.get("a").is_none(),
+            "cleared channel must not resolve"
+        );
     }
 }

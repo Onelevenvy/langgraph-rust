@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step: Some(0),
         ..Default::default()
     };
-    let next_cfg = saver.aput(&cfg, &cp1, &metadata, &vers1).await?;
+    let next_cfg = saver.aput(&cfg, cp1.clone(), &metadata, &vers1).await?;
     println!("stored checkpoint #1: id={}", cp1.id);
 
     // Second checkpoint that references the first as parent — both
@@ -67,7 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         step: Some(1),
         ..Default::default()
     };
-    saver.aput(&next_cfg, &cp2, &metadata2, &vers2).await?;
+    saver
+        .aput(&next_cfg, cp2.clone(), &metadata2, &vers2)
+        .await?;
     println!("stored checkpoint #2: id={}", cp2.id);
 
     // Fetch latest

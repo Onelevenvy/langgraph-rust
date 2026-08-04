@@ -337,7 +337,11 @@ impl From<&str> for MessageContent {
 
 /// Merge function for messages: appends new messages to existing ones.
 /// This is the default reducer for the `messages` field in agent states.
-pub fn add_messages(current: JsonValue, update: JsonValue) -> JsonValue {
+///
+/// Consumes `current` by value so existing messages are moved in place instead
+/// of deep-cloning the whole history on every step. `update` is borrowed and is
+/// usually a single new message.
+pub fn add_messages(current: JsonValue, update: &JsonValue) -> JsonValue {
     // Check if the update is a "Reset" signal: {"reset": true, "messages": [...]}
     if let Some(obj) = update.as_object() {
         if obj.get("reset").and_then(|v| v.as_bool()) == Some(true) {
@@ -352,30 +356,37 @@ pub fn add_messages(current: JsonValue, update: JsonValue) -> JsonValue {
         _ => vec![],
     };
 
-    let new_messages: Vec<JsonValue> = match update {
-        JsonValue::Array(arr) => arr,
+    let new_messages: Vec<&JsonValue> = match update {
+        JsonValue::Array(arr) => arr.iter().collect(),
         other => vec![other],
     };
 
-    // Handle RemoveMessage by filtering out messages with matching IDs
-    let mut result: Vec<JsonValue> = Vec::new();
-    let mut remove_ids: Vec<String> = Vec::new();
-
-    // Collect IDs to remove
+    // Collect IDs to remove, borrowing from `update` to avoid allocating a
+    // String per message just for the removal check.
+    let mut remove_ids: Vec<&str> = Vec::new();
     for msg in &new_messages {
         if let Some(obj) = msg.as_object() {
             if obj.get("type").and_then(|v| v.as_str()) == Some("remove") {
                 if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
-                    remove_ids.push(id.to_string());
+                    remove_ids.push(id);
                 }
             }
         }
     }
 
+    let mut result: Vec<JsonValue> = Vec::with_capacity(messages.len() + new_messages.len());
+
+    if remove_ids.is_empty() {
+        // Fast path: no removals, just append. Existing messages are moved in.
+        result.extend(messages);
+        result.extend(new_messages.into_iter().cloned());
+        return JsonValue::Array(result);
+    }
+
     // Add existing messages, skipping removed ones
     for msg in messages {
         if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-            if remove_ids.contains(&id.to_string()) {
+            if remove_ids.contains(&id) {
                 continue;
             }
         }
@@ -389,16 +400,18 @@ pub fn add_messages(current: JsonValue, update: JsonValue) -> JsonValue {
                 continue;
             }
         }
-        result.push(msg);
+        result.push(msg.clone());
     }
 
     JsonValue::Array(result)
 }
 
-/// Merge function for messages with reference signature.
+/// Merge function for messages, compatible with the `#[channel(...)]` reducer
+/// signature (`fn(JsonValue, &JsonValue) -> JsonValue`).
 ///
-/// This is the version compatible with `#[channel(reducer = "...")]` in the
-/// derive macro, which expects `fn(&JsonValue, &JsonValue) -> JsonValue`.
+/// Kept as a thin wrapper over [`add_messages`] so existing
+/// `#[channel(reducer = "add_messages_ref")]` references and the derive macro's
+/// built-in `#[channel(messages)]` keep working.
 ///
 /// ```ignore
 /// #[derive(StateGraph)]
@@ -407,8 +420,8 @@ pub fn add_messages(current: JsonValue, update: JsonValue) -> JsonValue {
 ///     messages: Vec<Message>,
 /// }
 /// ```
-pub fn add_messages_ref(current: &JsonValue, update: &JsonValue) -> JsonValue {
-    add_messages(current.clone(), update.clone())
+pub fn add_messages_ref(current: JsonValue, update: &JsonValue) -> JsonValue {
+    add_messages(current, update)
 }
 
 #[cfg(test)]
@@ -443,7 +456,7 @@ mod tests {
         let update = serde_json::json!([
             {"type": "ai", "content": "Hello"},
         ]);
-        let result = add_messages(existing, update);
+        let result = add_messages(existing, &update);
         assert_eq!(result.as_array().unwrap().len(), 2);
     }
 
@@ -456,7 +469,7 @@ mod tests {
         let update = serde_json::json!([
             {"type": "remove", "id": "msg1"},
         ]);
-        let result = add_messages(existing, update);
+        let result = add_messages(existing, &update);
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["id"], "msg2");

@@ -12,8 +12,10 @@ pub trait Channel: Send + Sync + 'static {
     fn checkpoint(&self) -> Option<JsonValue>;
 
     /// Restore channel state from a checkpoint.
+    /// Takes ownership of the checkpoint value so restoration moves (rather
+    /// than deep-copies) the serialized state out of the loaded checkpoint.
     #[allow(clippy::wrong_self_convention)]
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel>;
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel>;
 
     /// Apply a batch of updates. Returns true if the channel was modified.
     fn update(&self, values: &[JsonValue]) -> Result<bool, ChannelError>;

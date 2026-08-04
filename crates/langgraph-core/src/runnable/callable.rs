@@ -71,16 +71,14 @@ impl Runnable for RunnableCallable {
         let input = input.clone();
         let config = config.clone();
 
-        // Try to use existing tokio runtime, otherwise create one
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle.block_on(crate::config::with_config(
-                config.clone(),
-                func(input, config),
-            )),
-            Err(_) => tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(func(input, config)),
-        }
+        // Reuse the caller's runtime, or the process-global cached one (the old
+        // cold path built a fresh Runtime per call). `with_config` installs the
+        // task-local config so `get_config()` works inside the callable,
+        // matching `ainvoke`, which always wraps.
+        crate::config::block_on(crate::config::with_config(
+            config.clone(),
+            func(input, config),
+        ))
     }
 
     async fn ainvoke(

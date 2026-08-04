@@ -4,7 +4,10 @@ use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
 
 /// Reducer function type: (current, update) -> new
-pub type ReducerFn = fn(&JsonValue, &JsonValue) -> JsonValue;
+///
+/// Takes ownership of `current` so reducers can move existing state instead of
+/// deep-cloning it on every update; `update` is borrowed (usually small).
+pub type ReducerFn = fn(JsonValue, &JsonValue) -> JsonValue;
 
 /// Applies a binary operator to accumulate values.
 ///
@@ -31,10 +34,10 @@ impl Channel for BinaryOperatorAggregate {
         self.value.read().clone()
     }
 
-    fn from_checkpoint(&self, checkpoint: Option<&JsonValue>) -> Box<dyn Channel> {
+    fn from_checkpoint(&self, checkpoint: Option<JsonValue>) -> Box<dyn Channel> {
         Box::new(Self {
             key: self.key.clone(),
-            value: RwLock::new(checkpoint.cloned()),
+            value: RwLock::new(checkpoint),
             reducer: self.reducer,
         })
     }
@@ -67,7 +70,9 @@ impl Channel for BinaryOperatorAggregate {
                 continue;
             }
 
-            match guard.as_ref() {
+            // Move the accumulated value out so the reducer can consume it
+            // instead of deep-cloning the whole state on every update.
+            match guard.take() {
                 Some(current) => {
                     let new_val = (self.reducer)(current, val);
                     *guard = Some(new_val);
@@ -102,10 +107,10 @@ impl Channel for BinaryOperatorAggregate {
 }
 
 /// Common reducer: append arrays
-pub fn append_reducer(current: &JsonValue, update: &JsonValue) -> JsonValue {
+pub fn append_reducer(current: JsonValue, update: &JsonValue) -> JsonValue {
     let mut result = match current {
-        JsonValue::Array(arr) => arr.clone(),
-        other => vec![other.clone()],
+        JsonValue::Array(arr) => arr,
+        other => vec![other],
     };
     match update {
         JsonValue::Array(arr) => result.extend(arr.iter().cloned()),
@@ -115,10 +120,10 @@ pub fn append_reducer(current: &JsonValue, update: &JsonValue) -> JsonValue {
 }
 
 /// Common reducer: merge objects
-pub fn merge_reducer(current: &JsonValue, update: &JsonValue) -> JsonValue {
+pub fn merge_reducer(current: JsonValue, update: &JsonValue) -> JsonValue {
     match (current, update) {
         (JsonValue::Object(curr), JsonValue::Object(upd)) => {
-            let mut merged = curr.clone();
+            let mut merged = curr;
             for (k, v) in upd {
                 merged.insert(k.clone(), v.clone());
             }
@@ -163,7 +168,7 @@ mod tests {
         ch.update(&[serde_json::json!([1, 2])]).unwrap();
 
         let cp = ch.checkpoint();
-        let restored = ch.from_checkpoint(cp.as_ref());
+        let restored = ch.from_checkpoint(cp);
         assert_eq!(restored.get().unwrap(), serde_json::json!([1, 2]));
 
         restored.update(&[serde_json::json!([3])]).unwrap();

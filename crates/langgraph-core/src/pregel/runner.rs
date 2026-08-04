@@ -3,6 +3,7 @@ use crate::config;
 use crate::runnable::RunnableError;
 use crate::runtime::{Runtime, StreamWriter};
 use std::sync::Arc;
+use tokio::task::JoinSet;
 
 /// Dispatches tasks for parallel execution using tokio.
 ///
@@ -33,24 +34,95 @@ impl PregelRunner {
     ///
     /// Each task's runnable is invoked with its input and config.
     /// Writes are collected into each task's write buffer.
-    pub async fn run_tasks(&self, tasks: &mut [PregelExecutableTask]) -> Result<(), RunnerError> {
+    ///
+    /// A single task is executed inline to avoid spawn overhead on the common
+    /// sequential-chain path; multiple tasks are dispatched through a
+    /// `JoinSet` and run concurrently (fan-out takes ~max branch time instead
+    /// of the sum of branch times).
+    ///
+    /// Returns the tasks (with their write buffers populated) alongside the
+    /// overall result, since the caller inspects `task.writes` whether the
+    /// step succeeded or was interrupted. If several tasks fail or interrupt,
+    /// the lowest-index one wins, mirroring the order a serial runner would
+    /// have reported them in and keeping the outcome deterministic regardless
+    /// of `JoinSet` completion order. All tasks run to completion: a task that
+    /// would come after a failing one in serial order still executes and keeps
+    /// its writes (it ran in this super-step regardless).
+    pub async fn run_tasks(
+        &self,
+        mut tasks: Vec<PregelExecutableTask>,
+    ) -> (Vec<PregelExecutableTask>, Result<(), RunnerError>) {
         if tasks.is_empty() {
-            return Ok(());
+            return (tasks, Ok(()));
         }
 
         if tasks.len() == 1 {
             let task = &mut tasks[0];
-            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone())
-                .await?;
-            return Ok(());
+            if let Err(e) =
+                Self::execute_task(task, self.runtime.as_ref(), self.stream_writer.clone()).await
+            {
+                return (tasks, Err(e));
+            }
+            return (tasks, Ok(()));
         }
 
-        for task in tasks.iter_mut() {
-            Self::execute_single_task(task, self.runtime.as_ref(), self.stream_writer.clone())
-                .await?;
+        let mut set = JoinSet::new();
+        for (idx, mut task) in tasks.into_iter().enumerate() {
+            let runtime = self.runtime.clone();
+            let stream_writer = self.stream_writer.clone();
+            set.spawn(async move {
+                let result = Self::execute_task(&mut task, runtime.as_ref(), stream_writer).await;
+                (idx, task, result)
+            });
         }
 
-        Ok(())
+        let mut done: Vec<(usize, PregelExecutableTask)> = Vec::with_capacity(set.len());
+        let mut first_error: Option<(usize, RunnerError)> = None;
+
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((idx, task, result)) => {
+                    if let Err(e) = result {
+                        let replaces = match &first_error {
+                            Some((i, _)) => idx < *i,
+                            None => true,
+                        };
+                        if replaces {
+                            first_error = Some((idx, e));
+                        }
+                    }
+                    done.push((idx, task));
+                }
+                Err(join_err) => {
+                    // A task whose future panicked. The task itself is lost
+                    // (JoinSet cannot identify it); report a generic failure.
+                    let msg = join_err
+                        .try_into_panic()
+                        .ok()
+                        .and_then(|payload| {
+                            payload.downcast_ref::<String>().cloned().or_else(|| {
+                                payload.downcast_ref::<&str>().map(|s| (*s).to_string())
+                            })
+                        })
+                        .unwrap_or_else(|| "task panicked".to_string());
+                    if first_error.is_none() {
+                        first_error = Some((
+                            usize::MAX,
+                            RunnerError::TaskFailed("<unknown>".to_string(), msg),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Restore serial order so streaming update emission is deterministic.
+        done.sort_by_key(|(idx, _)| *idx);
+        let tasks: Vec<PregelExecutableTask> = done.into_iter().map(|(_, t)| t).collect();
+
+        match first_error {
+            Some((_, e)) => (tasks, Err(e)),
+            None => (tasks, Ok(())),
+        }
     }
 
     /// Execute tasks synchronously (blocking).
@@ -62,14 +134,18 @@ impl PregelRunner {
     }
 
     /// Execute a single task asynchronously.
-    async fn execute_single_task(
+    async fn execute_task(
         task: &mut PregelExecutableTask,
         runtime: Option<&Arc<Runtime>>,
         stream_writer: Option<StreamWriter>,
     ) -> Result<(), RunnerError> {
-        let mut config = task.config.clone();
+        // Inject CONFIG_KEY_SEND into task.config in place. task.config is dead
+        // after this super-step (nothing downstream reads it — writes, triggers
+        // and the checkpoint derive from other fields), so mutating it avoids a
+        // per-task config clone on every super-step.
         {
-            let configurable = config
+            let configurable = task
+                .config
                 .entry("configurable".to_string())
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(obj) = configurable.as_object_mut() {
@@ -103,12 +179,16 @@ impl PregelRunner {
         };
 
         let result = if let Some(ref rt) = effective_runtime {
-            config::with_runtime(config.clone(), rt.clone(), async {
-                task.proc.ainvoke(&task.input, &config).await
+            // with_runtime must own a config for the task-local while the node
+            // borrows one — one clone per task is unavoidable here (this branch
+            // is off the no-store/no-stream hot path).
+            let config = task.config.clone();
+            config::with_runtime(config, rt.clone(), async {
+                task.proc.ainvoke(&task.input, &task.config).await
             })
             .await
         } else {
-            task.proc.ainvoke(&task.input, &config).await
+            task.proc.ainvoke(&task.input, &task.config).await
         };
 
         match result {
@@ -140,9 +220,10 @@ impl PregelRunner {
         task: &mut PregelExecutableTask,
         runtime: Option<&Arc<Runtime>>,
     ) -> Result<(), RunnerError> {
-        let mut config = task.config.clone();
+        // Same in-place CONFIG_KEY_SEND injection as the async path.
         {
-            let configurable = config
+            let configurable = task
+                .config
                 .entry("configurable".to_string())
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(obj) = configurable.as_object_mut() {
@@ -154,11 +235,12 @@ impl PregelRunner {
         }
 
         let result = if let Some(rt) = runtime {
-            config::with_runtime_sync(config.clone(), rt.clone(), || {
-                task.proc.invoke(&task.input, &config)
+            let config = task.config.clone();
+            config::with_runtime_sync(config, rt.clone(), || {
+                task.proc.invoke(&task.input, &task.config)
             })
         } else {
-            task.proc.invoke(&task.input, &config)
+            task.proc.invoke(&task.input, &task.config)
         };
 
         match result {
