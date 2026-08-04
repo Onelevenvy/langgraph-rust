@@ -803,8 +803,7 @@ async fn bench_sqlite_static_context_reads() {
     let mut channels: HashMap<String, Box<dyn Channel>> = HashMap::new();
     channels.insert(
         "messages".to_string(),
-        Box::new(BinaryOperatorAggregate::new("messages", add_messages_ref))
-            as Box<dyn Channel>,
+        Box::new(BinaryOperatorAggregate::new("messages", add_messages_ref)) as Box<dyn Channel>,
     );
     channels.insert(
         "context".to_string(),
