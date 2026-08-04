@@ -684,9 +684,19 @@ impl CompiledStateGraph {
                 .unwrap_or(0);
             JsonValue::String(format!("{:032}", max_version + 1))
         };
+        // Build next BEFORE apply_writes: apply_writes drains each task's write
+        // buffer, so `writes.is_empty()` must be read before the writes are
+        // moved out. Identical result — apply_writes never modified task.writes
+        // before this change.
+        let next: Vec<String> = tasks
+            .iter()
+            .filter(|t| t.writes.is_empty())
+            .map(|t| t.name.clone())
+            .collect();
+
         apply_writes(
             &mut channels,
-            &tasks,
+            &mut tasks,
             &mut versions_seen,
             &mut channel_versions,
             trigger_to_nodes,
@@ -701,13 +711,6 @@ impl CompiledStateGraph {
             .cloned()
             .collect();
         let values = read_channels(&channels, &output_keys);
-
-        // Build next: names of tasks that have NOT written yet
-        let next: Vec<String> = tasks
-            .iter()
-            .filter(|t| t.writes.is_empty())
-            .map(|t| t.name.clone())
-            .collect();
 
         // Extract interrupts from pending writes
         let interrupts: Vec<Interrupt> = saved
@@ -1663,7 +1666,7 @@ impl CompiledStateGraph {
                 }))
             };
 
-            let (tasks, task_result) = runner.run_tasks(tasks).await;
+            let (mut tasks, task_result) = runner.run_tasks(tasks).await;
             match task_result {
                 Ok(()) => {}
 
@@ -1762,7 +1765,7 @@ impl CompiledStateGraph {
             let next_version = JsonValue::String(format!("{:032}", running_max_version));
             let updated = apply_writes(
                 &mut channels,
-                &tasks,
+                &mut tasks,
                 &mut versions_seen,
                 &mut channel_versions,
                 trigger_to_nodes,

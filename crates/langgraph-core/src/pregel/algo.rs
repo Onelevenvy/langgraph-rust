@@ -231,7 +231,7 @@ fn create_scratchpad(
 /// Returns the set of updated channel names.
 pub fn apply_writes(
     channels: &mut HashMap<String, Box<dyn Channel>>,
-    tasks: &[PregelExecutableTask],
+    tasks: &mut [PregelExecutableTask],
     versions_seen: &mut HashMap<String, HashMap<String, JsonValue>>,
     channel_versions: &mut ChannelVersions,
     trigger_to_nodes: &TriggerToNodes,
@@ -245,7 +245,7 @@ pub fn apply_writes(
     let bump_step = tasks.iter().any(|t| !t.triggers.is_empty());
 
     // 1. Update versions_seen for each task's trigger channels
-    for task in tasks {
+    for task in tasks.iter() {
         let seen = versions_seen.entry(task.name.clone()).or_default();
         for trigger in &task.triggers {
             if let Some(ver) = channel_versions.get(trigger) {
@@ -273,19 +273,18 @@ pub fn apply_writes(
         }
     }
 
-    // 4. Group writes by channel.
-    //    Filter out all reserved keys (NO_WRITES, PUSH, RESUME, INTERRUPT,
-    //    RETURN, ERROR, config keys, etc.) — only real channel writes proceed.
+    // 4. Group writes by channel, DRAINING each task's write buffer.
+    //    Streaming Updates (state.rs) already ran over `task.writes`, and the
+    //    get_state snapshot path computes `next` before calling apply_writes,
+    //    so nothing reads task.writes after this point — move the values out
+    //    instead of cloning them.
     let mut writes_by_channel: HashMap<String, Vec<JsonValue>> = HashMap::new();
-    for task in tasks {
-        for (chan, val) in &task.writes {
+    for task in tasks.iter_mut() {
+        for (chan, val) in std::mem::take(&mut task.writes) {
             if RESERVED.contains(&chan.as_str()) {
                 continue;
             }
-            writes_by_channel
-                .entry(chan.clone())
-                .or_default()
-                .push(val.clone());
+            writes_by_channel.entry(chan).or_default().push(val);
         }
     }
 
