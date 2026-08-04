@@ -1263,10 +1263,26 @@ fn build_checkpoint(
     use chrono::Utc;
     use langgraph_checkpoint::checkpoint::id::uuid6;
 
-    // Collect all channel values (including trigger channels for state history)
-    let channel_values: HashMap<String, JsonValue> = channels
+    // Delta vs. the versions this run started from: only channels whose
+    // version changed since then need new blob rows.
+    let new_versions: ChannelVersions = channel_versions
         .iter()
-        .filter_map(|(k, v)| v.checkpoint().map(|val| (k.clone(), val)))
+        .filter(|(k, v)| previous_versions.get(k.as_str()) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    // Delta-only: serialize only channels whose version moved this run.
+    // Unchanged channels are reconstructed by the saver's version-merged
+    // reads (see BaseCheckpointSaver::get_tuple), so `channel_values` here
+    // is a delta, not a snapshot. Version bumps are gated on actual channel
+    // state changes in apply_writes, so nothing is lost.
+    let channel_values: HashMap<String, JsonValue> = new_versions
+        .keys()
+        .filter_map(|k| {
+            channels
+                .get(k)
+                .and_then(|v| v.checkpoint().map(|val| (k.clone(), val)))
+        })
         .collect();
 
     let checkpoint = langgraph_checkpoint::Checkpoint {
@@ -1278,14 +1294,6 @@ fn build_checkpoint(
         versions_seen: versions_seen.clone(),
         updated_channels: None,
     };
-
-    // Delta vs. the versions this run started from: only channels whose
-    // version changed since then need new blob rows.
-    let new_versions: ChannelVersions = channel_versions
-        .iter()
-        .filter(|(k, v)| previous_versions.get(k.as_str()) != Some(*v))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
 
     let metadata = CheckpointMetadata::default();
     (checkpoint, metadata, new_versions)
@@ -1499,9 +1507,16 @@ impl CompiledStateGraph {
         // "memory confusion" / spurious LLM re-runs observed after tool denial.
         if !is_fork && !is_resuming {
             let input_writes = map_input(&[START.to_string()], input);
+            // Collect every channel written from the input — both the
+            // START-mapped writes and the direct dict-key writes — and bump
+            // each one's version. Delta-only checkpoints serialize only
+            // channels whose version moved, so a value-bearing channel with no
+            // version entry would be silently dropped on save.
+            let mut written_input: Vec<String> = Vec::new();
             for (chan, val) in &input_writes {
                 if let Some(ch) = channels.get(chan) {
                     ch.update(std::slice::from_ref(val)).ok();
+                    written_input.push(chan.clone());
                 }
             }
             if let Some(obj) = input.as_object() {
@@ -1509,13 +1524,14 @@ impl CompiledStateGraph {
                     if key != START && !key.starts_with("branch:") && !key.starts_with("join:") {
                         if let Some(ch) = channels.get(key) {
                             ch.update(std::slice::from_ref(val)).ok();
+                            written_input.push(key.clone());
                         }
                     }
                 }
             }
-            for (chan, _) in &input_writes {
+            for chan in written_input {
                 channel_versions.insert(
-                    chan.clone(),
+                    chan,
                     JsonValue::String(format!("{:032}", version_offset + step)),
                 );
             }

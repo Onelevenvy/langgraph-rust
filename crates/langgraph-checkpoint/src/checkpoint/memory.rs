@@ -7,21 +7,31 @@ use parking_lot::RwLock;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
-type StorageKey = (String, String, String); // (thread_id, checkpoint_ns, checkpoint_id)
+type RowKey = (String, String, String); // (thread_id, checkpoint_ns, checkpoint_id)
 type WriteKey = (String, String, String, i64); // (thread_id, checkpoint_ns, checkpoint_id, idx)
+/// Blob key: (thread_id, checkpoint_ns, channel, version_str)
+type BlobKey = (String, String, String, String);
 
 /// (thread_id, checkpoint_ns, checkpoint_id) -> (checkpoint, metadata, parent_checkpoint_id)
-type StorageValue = (Checkpoint, CheckpointMetadata, Option<String>);
+type RowValue = (Checkpoint, CheckpointMetadata, Option<String>);
 /// (thread_id, checkpoint_ns, checkpoint_id, idx) -> (task_id, channel, value_json, task_path)
 type WriteValue = (String, String, JsonValue, String);
 
 /// In-memory checkpoint saver for testing and development.
 ///
-/// Stores the `Checkpoint` struct directly (no JSON round trip) and tracks
-/// the newest checkpoint per thread so lookups are O(1) instead of scanning
-/// the whole history.
+/// Stores `Checkpoint`s directly (no JSON round trip). Channel values are
+/// stored as version-addressed blobs — `put` receives a delta
+/// (`new_versions` only, see `BaseCheckpointSaver`), and reads reconstruct
+/// the full state by resolving each channel's version against the blob
+/// store, mirroring the version-joined merge of the sqlite saver. `None`
+/// marks a channel whose version moved but has no value (e.g. a cleared
+/// ephemeral channel), matching the "empty" blob rows of the sqlite saver.
+/// The newest checkpoint per thread is tracked O(1).
 pub struct InMemorySaver {
-    storage: RwLock<HashMap<StorageKey, StorageValue>>,
+    /// Checkpoint rows with `channel_values` stripped (they live in `blobs`).
+    rows: RwLock<HashMap<RowKey, RowValue>>,
+    /// (thread_id, checkpoint_ns, channel, version) -> value or empty marker.
+    blobs: RwLock<HashMap<BlobKey, Option<JsonValue>>>,
     /// (thread_id, checkpoint_ns) -> newest checkpoint_id
     latest: RwLock<HashMap<(String, String), String>>,
     writes: RwLock<HashMap<WriteKey, WriteValue>>,
@@ -30,10 +40,41 @@ pub struct InMemorySaver {
 impl InMemorySaver {
     pub fn new() -> Self {
         Self {
-            storage: RwLock::new(HashMap::new()),
+            rows: RwLock::new(HashMap::new()),
+            blobs: RwLock::new(HashMap::new()),
             latest: RwLock::new(HashMap::new()),
             writes: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Reconstruct a checkpoint's full `channel_values` from the
+    /// version-addressed blob store: every channel in `channel_versions`
+    /// resolves to the blob written at that version (possibly by an earlier
+    /// checkpoint), empty markers and missing blobs are skipped.
+    fn reconstruct_values(
+        blobs: &HashMap<BlobKey, Option<JsonValue>>,
+        channel_versions: &ChannelVersions,
+        thread_id: &str,
+        checkpoint_ns: &str,
+    ) -> HashMap<String, JsonValue> {
+        let mut values = HashMap::new();
+        for (channel, ver) in channel_versions {
+            let ver_str = match ver {
+                JsonValue::String(s) => s.clone(),
+                JsonValue::Number(n) => n.to_string(),
+                _ => continue,
+            };
+            let key = (
+                thread_id.to_string(),
+                checkpoint_ns.to_string(),
+                channel.clone(),
+                ver_str,
+            );
+            if let Some(Some(val)) = blobs.get(&key) {
+                values.insert(channel.clone(), val.clone());
+            }
+        }
+        values
     }
 
     fn config_to_ids(config: &RunnableConfig) -> (String, String, Option<String>) {
@@ -84,7 +125,7 @@ impl BaseCheckpointSaver for InMemorySaver {
             },
         };
 
-        let (checkpoint, metadata, parent_cid) = match self.storage.read().get(&(
+        let (mut checkpoint, metadata, parent_cid) = match self.rows.read().get(&(
             thread_id.clone(),
             checkpoint_ns.clone(),
             resolved_cid.clone(),
@@ -92,6 +133,19 @@ impl BaseCheckpointSaver for InMemorySaver {
             Some(v) => v.clone(),
             None => return Ok(None),
         };
+
+        // Reconstruct the full state: the row holds only the delta, so merge
+        // version-addressed blob values over it (see struct docs).
+        let blob_values = {
+            let blobs = self.blobs.read();
+            Self::reconstruct_values(
+                &blobs,
+                &checkpoint.channel_versions,
+                &thread_id,
+                &checkpoint_ns,
+            )
+        };
+        checkpoint.channel_values = blob_values;
 
         let parent_config = parent_cid.map(|pid| {
             let mut c = RunnableConfig::new();
@@ -149,7 +203,7 @@ impl BaseCheckpointSaver for InMemorySaver {
         before: Option<&RunnableConfig>,
         limit: Option<usize>,
     ) -> Result<Vec<CheckpointTuple>, CheckpointError> {
-        let storage = self.storage.read();
+        let rows = self.rows.read();
 
         let (thread_id, checkpoint_ns) = match config {
             Some(c) => {
@@ -161,7 +215,7 @@ impl BaseCheckpointSaver for InMemorySaver {
 
         let before_id = before.and_then(|c| Self::config_to_ids(c).2);
 
-        let mut entries: Vec<_> = storage
+        let mut entries: Vec<_> = rows
             .iter()
             .filter(|((tid, ns, _), _)| {
                 (thread_id.is_empty() || tid == &thread_id)
@@ -214,6 +268,14 @@ impl BaseCheckpointSaver for InMemorySaver {
                 c
             });
 
+            // Reconstruct the full state from version-addressed blobs.
+            let mut checkpoint = checkpoint.clone();
+            let blob_values = {
+                let blobs = self.blobs.read();
+                Self::reconstruct_values(&blobs, &checkpoint.channel_versions, tid, ns)
+            };
+            checkpoint.channel_values = blob_values;
+
             results.push(CheckpointTuple {
                 config: {
                     let mut c = RunnableConfig::new();
@@ -227,7 +289,7 @@ impl BaseCheckpointSaver for InMemorySaver {
                     );
                     c
                 },
-                checkpoint: checkpoint.clone(),
+                checkpoint,
                 metadata: metadata.clone(),
                 parent_config,
                 pending_writes: None,
@@ -240,9 +302,9 @@ impl BaseCheckpointSaver for InMemorySaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: Checkpoint,
+        mut checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
-        _new_versions: &ChannelVersions,
+        new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
         let (thread_id, checkpoint_ns, _) = Self::config_to_ids(config);
         let cid = checkpoint.id.clone();
@@ -254,8 +316,32 @@ impl BaseCheckpointSaver for InMemorySaver {
             .get(&(thread_id.clone(), checkpoint_ns.clone()))
             .cloned();
 
+        // Store the delta as version-addressed blobs: one per moved channel,
+        // with the value if present or an empty marker (`None`) if the
+        // channel was cleared — mirroring the "empty" blob rows of the
+        // sqlite saver. The row keeps only the metadata fields; reads
+        // reconstruct the full state via `reconstruct_values`.
+        let mut channel_values = std::mem::take(&mut checkpoint.channel_values);
+        {
+            let mut blobs = self.blobs.write();
+            for (channel, ver) in new_versions {
+                let ver_str = match ver {
+                    JsonValue::String(s) => s.clone(),
+                    JsonValue::Number(n) => n.to_string(),
+                    _ => continue,
+                };
+                let key = (
+                    thread_id.clone(),
+                    checkpoint_ns.clone(),
+                    channel.clone(),
+                    ver_str,
+                );
+                blobs.insert(key, channel_values.remove(channel));
+            }
+        }
+
         let key = (thread_id.clone(), checkpoint_ns.clone(), cid.clone());
-        self.storage
+        self.rows
             .write()
             .insert(key, (checkpoint, metadata.clone(), parent_id));
 
@@ -317,9 +403,10 @@ impl BaseCheckpointSaver for InMemorySaver {
     }
 
     fn delete_thread(&self, thread_id: &str) -> Result<(), CheckpointError> {
-        self.storage
+        self.rows.write().retain(|(tid, _, _), _| tid != thread_id);
+        self.blobs
             .write()
-            .retain(|(tid, _, _), _| tid != thread_id);
+            .retain(|(tid, _, _, _), _| tid != thread_id);
         self.latest.write().retain(|(tid, _), _| tid != thread_id);
         self.writes
             .write()
@@ -528,5 +615,116 @@ mod tests {
         let tuple = saver.get_tuple(&new_config).unwrap().unwrap();
         assert!(tuple.pending_writes.is_some());
         assert_eq!(tuple.pending_writes.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_incremental_blob_merge() {
+        let saver = InMemorySaver::new();
+        let metadata = CheckpointMetadata::default();
+
+        let mut config = RunnableConfig::new();
+        config.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "test-thread",
+                "checkpoint_ns": "",
+            }),
+        );
+
+        // cp1: a=1, b=1, both at version 1.
+        let mut cp1 = Checkpoint::empty();
+        cp1.id = "cp-001".to_string();
+        cp1.channel_versions
+            .insert("a".into(), serde_json::json!(1));
+        cp1.channel_versions
+            .insert("b".into(), serde_json::json!(1));
+        cp1.channel_values.insert("a".into(), serde_json::json!(1));
+        cp1.channel_values.insert("b".into(), serde_json::json!(1));
+        let mut new_versions = HashMap::new();
+        new_versions.insert("a".into(), serde_json::json!(1));
+        new_versions.insert("b".into(), serde_json::json!(1));
+        saver.put(&config, cp1, &metadata, &new_versions).unwrap();
+
+        // cp2: only a moves to version 2; b is unchanged.
+        let mut cp2 = Checkpoint::empty();
+        cp2.id = "cp-002".to_string();
+        cp2.channel_versions
+            .insert("a".into(), serde_json::json!(2));
+        cp2.channel_versions
+            .insert("b".into(), serde_json::json!(1));
+        cp2.channel_values.insert("a".into(), serde_json::json!(2));
+        let mut new_versions = HashMap::new();
+        new_versions.insert("a".into(), serde_json::json!(2));
+        saver.put(&config, cp2, &metadata, &new_versions).unwrap();
+
+        // Reading cp2 merges b from the earlier checkpoint.
+        let mut cfg2 = config.clone();
+        cfg2.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "test-thread",
+                "checkpoint_ns": "",
+                "checkpoint_id": "cp-002",
+            }),
+        );
+        let tuple = saver.get_tuple(&cfg2).unwrap().unwrap();
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("a"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&serde_json::json!(1))
+        );
+
+        // Reading cp1 is unaffected by the later delta.
+        let mut cfg1 = config.clone();
+        cfg1.insert(
+            "configurable".to_string(),
+            serde_json::json!({
+                "thread_id": "test-thread",
+                "checkpoint_ns": "",
+                "checkpoint_id": "cp-001",
+            }),
+        );
+        let tuple = saver.get_tuple(&cfg1).unwrap().unwrap();
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("a"),
+            Some(&serde_json::json!(1))
+        );
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&serde_json::json!(1))
+        );
+
+        // Latest (no explicit checkpoint_id) resolves to cp2 with full state.
+        let tuple = saver.get_tuple(&config).unwrap().unwrap();
+        assert_eq!(tuple.checkpoint.id, "cp-002");
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("a"),
+            Some(&serde_json::json!(2))
+        );
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&serde_json::json!(1))
+        );
+
+        // cp3: a moves to version 3 with no value (cleared channel) -> the
+        // empty marker removes it; b stays.
+        let mut cp3 = Checkpoint::empty();
+        cp3.id = "cp-003".to_string();
+        cp3.channel_versions
+            .insert("a".into(), serde_json::json!(3));
+        cp3.channel_versions
+            .insert("b".into(), serde_json::json!(1));
+        let mut new_versions = HashMap::new();
+        new_versions.insert("a".into(), serde_json::json!(3));
+        saver.put(&config, cp3, &metadata, &new_versions).unwrap();
+        let tuple = saver.get_tuple(&config).unwrap().unwrap();
+        assert_eq!(tuple.checkpoint.channel_values.get("a"), None);
+        assert_eq!(
+            tuple.checkpoint.channel_values.get("b"),
+            Some(&serde_json::json!(1))
+        );
     }
 }

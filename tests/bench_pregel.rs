@@ -250,9 +250,9 @@ impl BaseCheckpointSaver for LatestOnlySaver {
     fn put(
         &self,
         config: &RunnableConfig,
-        checkpoint: Checkpoint,
+        mut checkpoint: Checkpoint,
         metadata: &CheckpointMetadata,
-        _new_versions: &ChannelVersions,
+        new_versions: &ChannelVersions,
     ) -> Result<RunnableConfig, CheckpointError> {
         let (thread_id, checkpoint_ns, _) = Self::config_to_ids(config);
 
@@ -264,12 +264,42 @@ impl BaseCheckpointSaver for LatestOnlySaver {
             .get(&(thread_id.clone(), checkpoint_ns.clone()))
             .map(|(cid, _, _, _)| cid.clone());
 
-        // Replace the thread's checkpoint — only the newest is retained.
+        // Merge-on-put: the engine writes deltas (`new_versions` only), so
+        // move the moved channels' values over the retained state, drop
+        // channels cleared this step (moved with no value), and refresh the
+        // metadata fields. Only the newest checkpoint is retained.
         let cid = checkpoint.id.clone();
-        self.storage.write().unwrap().insert(
-            (thread_id.clone(), checkpoint_ns.clone()),
-            (cid.clone(), checkpoint, metadata.clone(), parent_id),
-        );
+        let mut delta_values = std::mem::take(&mut checkpoint.channel_values);
+        let mut storage = self.storage.write().unwrap();
+        match storage.get_mut(&(thread_id.clone(), checkpoint_ns.clone())) {
+            Some((_, prev, prev_metadata, prev_parent)) => {
+                for channel in new_versions.keys() {
+                    match delta_values.remove(channel) {
+                        Some(val) => {
+                            prev.channel_values.insert(channel.clone(), val);
+                        }
+                        None => {
+                            prev.channel_values.remove(channel);
+                        }
+                    }
+                }
+                prev.v = checkpoint.v;
+                prev.id = checkpoint.id;
+                prev.ts = checkpoint.ts;
+                prev.channel_versions = checkpoint.channel_versions;
+                prev.versions_seen = checkpoint.versions_seen;
+                prev.updated_channels = checkpoint.updated_channels;
+                *prev_metadata = metadata.clone();
+                *prev_parent = parent_id;
+            }
+            None => {
+                storage.insert(
+                    (thread_id.clone(), checkpoint_ns.clone()),
+                    (cid.clone(), checkpoint, metadata.clone(), parent_id),
+                );
+            }
+        }
+        drop(storage);
         // Prune pending writes down to the newest checkpoint id.
         self.writes
             .write()
